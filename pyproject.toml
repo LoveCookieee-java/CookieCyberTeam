@@ -19,9 +19,17 @@ classifiers = [
 ]
 
 [project.scripts]
+cookie-cyber-team = "server:main"
 cookie-cyber-mcp = "server:main"
 cookie-cyber-cli = "core.cli:main"
 cookiecyber = "core.cli:main"
+
+[tool.setuptools]
+py-modules = ["server"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

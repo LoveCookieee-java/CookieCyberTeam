@@ -1,0 +1,12 @@
+# Smithery configuration file
+# Reference: https://smithery.ai/docs/config
+
+startCommand:
+  type: stdio
+  config:
+    command: uvx
+    args:
+      - cookie-cyber-team
+    env:
+      CAPE_API_URL: ""
+      CAPE_API_KEY: ""
