@@ -17,6 +17,7 @@ from core.sandbox_runner import (
     SandboxRunner,
     build_whitelisted_env,
 )
+from core.tool_indexer import ToolchainIndexer
 
 
 class TestSandboxRunner(unittest.TestCase):
@@ -74,6 +75,21 @@ class TestSandboxRunner(unittest.TestCase):
             # Must NOT start with "E:"
             self.assertFalse(v_spec.startswith("E:"), f"Invalid Docker volume spec on Windows: {v_spec}")
             self.assertTrue(v_spec.startswith("/e/") or v_spec.startswith("/"), f"Expected posix volume format: {v_spec}")
+
+    def test_docker_env_whitelist_keys(self):
+        """Verify Docker and platform runtime environment variables are preserved in whitelist."""
+        os.environ["DOCKER_HOST"] = "tcp://localhost:2375"
+        os.environ["DOCKER_CONFIG"] = "/etc/docker"
+        os.environ["DOCKER_CONTEXT"] = "default"
+        os.environ["DOCKER_TLS_VERIFY"] = "1"
+        os.environ["DOCKER_CERT_PATH"] = "/certs"
+
+        env = build_whitelisted_env()
+        self.assertEqual(env.get("DOCKER_HOST"), "tcp://localhost:2375")
+        self.assertEqual(env.get("DOCKER_CONFIG"), "/etc/docker")
+        self.assertEqual(env.get("DOCKER_CONTEXT"), "default")
+        self.assertEqual(env.get("DOCKER_TLS_VERIFY"), "1")
+        self.assertEqual(env.get("DOCKER_CERT_PATH"), "/certs")
 
 
 class TestSafePatchGuardrails(unittest.TestCase):
@@ -217,6 +233,91 @@ class TestSafePatchGuardrails(unittest.TestCase):
         self.assertIn("residual_findings", stats)
         self.assertEqual(len(stats["residual_findings"]), 1)
         self.assertEqual(stats["residual_findings"][0]["cwe_id"], "CWE-78")
+
+    def test_single_committer_gate_rejection(self):
+        """Verify Single-Committer gate rejects commits from workers and only accepts Lead Orchestrator."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / "test.py"
+            tmp_path.write_text("x = 1\n", encoding="utf-8")
+
+            # Non-Lead Orchestrator committer must raise GuardrailViolation
+            with self.assertRaises(GuardrailViolation) as ctx:
+                self.manager.apply_safe_patch(
+                    tmp_path,
+                    "x = 2\n",
+                    task_id="patch-1",
+                    committer="Patch Developer",
+                )
+            self.assertIn("Single-Committer Gate Violation", str(ctx.exception))
+
+            # Default or explicit 'Lead Orchestrator' succeeds
+            res = self.manager.apply_safe_patch(
+                tmp_path,
+                "x = 2\n",
+                task_id="patch-1",
+                committer="Lead Orchestrator",
+            )
+            self.assertTrue(res["success"])
+
+
+class TestToolchainIndexer(unittest.TestCase):
+
+    def setUp(self):
+        self.indexer = ToolchainIndexer()
+
+    def test_discover_tools_and_markdown(self):
+        """Verify host tools discovery and markdown formatting."""
+        data = self.indexer.discover()
+        self.assertIn("tools", data)
+        self.assertIn("available_tools", data)
+        md = self.indexer.to_markdown()
+        self.assertIn("# Host Defensive & Reverse Engineering Toolchain Index", md)
+
+    def test_run_diagnostic_tool_whitelist_and_metachar_rejection(self):
+        """Verify run_diagnostic_tool rejects unwhitelisted tools and dangerous characters."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_file = Path(tmp_dir) / "sample.bin"
+            sample_file.write_bytes(b"HELLO_WORLD_TEST")
+
+            # 1. Reject unwhitelisted tool
+            res1 = self.indexer.run_diagnostic_tool("rm", sample_file)
+            self.assertFalse(res1["success"])
+            self.assertIn("not in allowed diagnostic whitelist", res1["error"])
+
+            # 2. Reject metacharacters in arguments
+            res2 = self.indexer.run_diagnostic_tool("strings", sample_file, args=["-n", "4; ls"])
+            self.assertFalse(res2["success"])
+            self.assertIn("forbidden shell metacharacters", res2["error"])
+
+            # 3. Reject non-existent file
+            res3 = self.indexer.run_diagnostic_tool("strings", "non_existent_file.bin")
+            self.assertFalse(res3["success"])
+            self.assertIn("not found", res3["error"])
+
+    def test_run_diagnostic_tool_metrics(self):
+        """Verify run_diagnostic_tool execution returns duration_ms and duration_sec."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample_file = Path(tmp_dir) / "sample.bin"
+            sample_file.write_bytes(b"HELLO_DIAGNOSTIC_WORLD\x00")
+
+            from unittest.mock import patch
+            mock_res = {
+                "success": True,
+                "exit_code": 0,
+                "stdout": "HELLO_DIAGNOSTIC_WORLD",
+                "stderr": "",
+                "timed_out": False,
+                "duration_ms": 150,
+                "argv": ["strings", str(sample_file)],
+            }
+            with patch("shutil.which", return_value="strings"):
+                with patch("core.sandbox_runner.SandboxRunner.run_command", return_value=mock_res):
+                    res = self.indexer.run_diagnostic_tool("strings", sample_file)
+                    self.assertTrue(res["success"])
+                    self.assertEqual(res["duration_ms"], 150)
+                    self.assertEqual(res["duration_sec"], 0.15)
+                    self.assertEqual(res["exit_code"], 0)
+                    self.assertFalse(res["timed_out"])
 
 
 if __name__ == "__main__":

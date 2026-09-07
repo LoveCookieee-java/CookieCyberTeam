@@ -205,6 +205,36 @@ class TestDAGOrchestrator(unittest.TestCase):
         self.engine.mark_message_processed(msg["msg_id"])
         self.assertTrue(self.engine.is_inbox_drained(task_id))
 
+    def test_recover_orphaned_tasks(self):
+        """Verify recovering orphaned RUNNING tasks resets to READY or PENDING based on dependencies."""
+        # Task 1: COMPLETED
+        self.engine.add_task("t1", "Audit", "Auditor", [])
+        self.engine.update_task_status("t1", "COMPLETED")
+
+        # Task 2: RUNNING, depends on t1 (completed) -> should become READY
+        self.engine.add_task("t2", "Debug", "Debugger", ["t1"])
+        self.engine.update_task_status("t2", "RUNNING")
+
+        # Task 3: PENDING
+        self.engine.add_task("t3", "Patch", "Developer", ["t2"])
+
+        # Task 4: RUNNING, depends on t3 (pending) -> should become PENDING
+        self.engine.add_task("t4", "Deploy", "Operator", ["t3"])
+        self.engine.update_task_status("t4", "RUNNING")
+
+        res = self.engine.recover_orphaned_tasks()
+        self.assertTrue(res["success"])
+        self.assertEqual(res["recovered_count"], 2)
+
+        task_2 = self.engine.get_task("t2")
+        self.assertEqual(task_2["status"], "READY")
+
+        task_4 = self.engine.get_task("t4")
+        self.assertEqual(task_4["status"], "PENDING")
+
+        logs = self.engine.get_audit_log(event_type="TASK_ORPHAN_RECOVERED")
+        self.assertEqual(len(logs), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

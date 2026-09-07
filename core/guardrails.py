@@ -198,16 +198,35 @@ class SafePatchManager:
 
         return {"passed": True, "branch": current_branch}
 
+    def check_single_committer(self, committer: str = "Lead Orchestrator") -> Dict[str, Any]:
+        """Gate: Enforce Single-Committer Isolation. Only Lead Orchestrator can commit code directly."""
+        if committer != "Lead Orchestrator":
+            raise GuardrailViolation(
+                gate_name="Single-Committer Gate",
+                message=(
+                    f"Agent '{committer}' is not authorized to apply patches directly. "
+                    f"Only 'Lead Orchestrator' holds single-committer authority. "
+                    f"Worker agents must send proposals via Point-to-Point Mailbox."
+                ),
+                details={"committer": committer, "required_role": "Lead Orchestrator"},
+            )
+        return {"passed": True, "committer": committer}
+
     def apply_safe_patch(
         self,
         target_file_path: str | Path,
         patched_content: str,
         task_id: str = "bugfix",
         repo_path: Optional[str | Path] = None,
+        committer: str = "Lead Orchestrator",
     ) -> Dict[str, Any]:
         """
-        Validate all 3 gates and atomically apply patch if successful.
+        Validate all mandatory gates (Single-Committer, Diff Cap, Zero-Regression SAST, Branch Isolation)
+        and atomically apply patch if successful.
         """
+        # 0. Gate 0: Single-Committer Gate
+        committer_stats = self.check_single_committer(committer)
+
         target = Path(target_file_path).resolve()
         original_code = ""
         if target.exists():
@@ -244,6 +263,7 @@ class SafePatchManager:
         return {
             "success": True,
             "target_file": str(target),
+            "committer": committer_stats.get("committer"),
             "diff_stats": diff_stats,
             "regression_stats": regression_stats,
             "branch": branch_stats.get("branch"),

@@ -80,6 +80,10 @@ def parse_magic_header(data: bytes) -> Dict[str, Any]:
             "os": "Windows",
             "description": "Windows Portable Executable (MZ Header)",
             "is_valid_pe": False,
+            "sections": [],
+            "has_wx_sections": False,
+            "wx_sections": [],
+            "section_anomalies": [],
         }
         if len(data) >= 0x40:
             pe_offset = struct.unpack("<I", data[0x3C:0x40])[0]
@@ -87,6 +91,7 @@ def parse_magic_header(data: bytes) -> Dict[str, Any]:
                 pe_info["is_valid_pe"] = True
                 pe_info["pe_header_offset"] = hex(pe_offset)
                 machine = struct.unpack("<H", data[pe_offset + 4:pe_offset + 6])[0]
+                num_sections = struct.unpack("<H", data[pe_offset + 6:pe_offset + 8])[0]
                 characteristics = struct.unpack("<H", data[pe_offset + 22:pe_offset + 24])[0]
                 size_of_opt = struct.unpack("<H", data[pe_offset + 20:pe_offset + 22])[0]
                 
@@ -96,6 +101,7 @@ def parse_magic_header(data: bytes) -> Dict[str, Any]:
                     0xaa64: "ARM64 (little endian)",
                 }
                 pe_info["architecture"] = machine_map.get(machine, f"Unknown ({hex(machine)})")
+                pe_info["number_of_sections"] = num_sections
                 pe_info["is_dll"] = bool(characteristics & 0x2000)
                 pe_info["is_executable"] = bool(characteristics & 0x0002)
 
@@ -104,6 +110,82 @@ def parse_magic_header(data: bytes) -> Dict[str, Any]:
                 if size_of_opt >= 2 and opt_offset + 2 <= len(data):
                     opt_magic = struct.unpack("<H", data[opt_offset:opt_offset + 2])[0]
                     pe_info["pe_type"] = "PE32+" if opt_magic == 0x20b else ("PE32" if opt_magic == 0x10b else "Unknown")
+
+                # Section Table Parsing
+                sec_table_offset = opt_offset + size_of_opt
+                sections: List[Dict[str, Any]] = []
+                wx_sections: List[str] = []
+                anomalies: List[str] = []
+
+                IMAGE_SCN_MEM_EXECUTE = 0x20000000
+                IMAGE_SCN_MEM_WRITE = 0x80000000
+
+                if sec_table_offset > len(data):
+                    anomalies.append(f"Malformed PE: Section table offset ({hex(sec_table_offset)}) exceeds file size ({hex(len(data))})")
+                else:
+                    for i in range(num_sections):
+                        sec_start = sec_table_offset + (i * 40)
+                        if sec_start + 40 > len(data):
+                            anomalies.append(
+                                f"Truncated section table: header specifies {num_sections} sections, but file only contains data for {len(sections)}"
+                            )
+                            break
+                        sec_header = data[sec_start:sec_start + 40]
+                        sec_name_raw = sec_header[:8]
+                        sec_name = sec_name_raw.split(b"\x00", 1)[0].decode("ascii", "replace").strip()
+                        if not sec_name or not sec_name.isprintable():
+                            sec_name = f"unnamed_{i}" if not sec_name else sec_name
+                            anomalies.append(f"Section at index {i} has empty or non-printable name")
+                        vsize = struct.unpack("<I", sec_header[8:12])[0]
+                        vaddr = struct.unpack("<I", sec_header[12:16])[0]
+                        raw_size = struct.unpack("<I", sec_header[16:20])[0]
+                        raw_ptr = struct.unpack("<I", sec_header[20:24])[0]
+                        sec_chars = struct.unpack("<I", sec_header[36:40])[0]
+
+                        is_executable = bool(sec_chars & IMAGE_SCN_MEM_EXECUTE)
+                        is_writable = bool(sec_chars & IMAGE_SCN_MEM_WRITE)
+                        is_wx = is_executable and is_writable
+
+                        if is_wx:
+                            wx_sections.append(sec_name)
+                            anomalies.append(f"Section '{sec_name}' has W^X violation (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_WRITE)")
+
+                        if "UPX" in sec_name.upper():
+                            anomalies.append(f"UPX packed section detected: '{sec_name}'")
+
+                        # Size anomaly: VirtualSize significantly larger than RawSize
+                        if raw_size == 0 and vsize > 0:
+                            anomalies.append(f"Section '{sec_name}' has 0 raw bytes but non-zero virtual size {vsize} (decompression buffer)")
+                        elif raw_size > 0 and vsize > 3 * raw_size:
+                            anomalies.append(f"Section '{sec_name}' virtual size ({vsize}) > 3x raw size ({raw_size})")
+
+                        # Out of bounds check
+                        if raw_size > 0 and raw_ptr + raw_size > len(data):
+                            anomalies.append(f"Section '{sec_name}' raw data ({hex(raw_ptr)}..{hex(raw_ptr + raw_size)}) extends beyond file boundary ({hex(len(data))})")
+
+                        # Entropy calculation for section raw data
+                        sec_entropy = 0.0
+                        if raw_size > 0 and raw_ptr < len(data):
+                            avail_data = data[raw_ptr:min(len(data), raw_ptr + raw_size)]
+                            sec_entropy = calculate_entropy(avail_data)
+
+                        sections.append({
+                            "name": sec_name,
+                            "virtual_size": vsize,
+                            "virtual_address": hex(vaddr),
+                            "raw_data_size": raw_size,
+                            "raw_data_pointer": hex(raw_ptr),
+                            "characteristics": hex(sec_chars),
+                            "is_executable": is_executable,
+                            "is_writable": is_writable,
+                            "is_wx": is_wx,
+                            "entropy": sec_entropy,
+                        })
+
+                pe_info["sections"] = sections
+                pe_info["has_wx_sections"] = bool(wx_sections)
+                pe_info["wx_sections"] = wx_sections
+                pe_info["section_anomalies"] = anomalies
         return pe_info
 
     # 2. Linux ELF
@@ -144,8 +226,35 @@ def parse_magic_header(data: bytes) -> Dict[str, Any]:
             desc = "Java Archive (JAR/WAR)"
         return {"format": "ZIP", "os": "Cross-Platform", "description": desc}
 
-    # 5. Java Class Bytecode
+    # 5. Java Class Bytecode vs Mach-O Universal FAT Binary
+    if data.startswith(b"\xca\xfe\xba\xbf"):
+        nfat_arch = struct.unpack(">I", data[4:8])[0] if len(data) >= 8 else 0
+        return {
+            "format": "Mach-O",
+            "os": "macOS/iOS",
+            "description": f"Apple Mach-O Universal FAT 64-bit Binary ({nfat_arch} architectures)",
+            "fat_arch_count": nfat_arch,
+        }
+
     if data.startswith(b"\xca\xfe\xba\xbe"):
+        if len(data) >= 8:
+            minor, major = struct.unpack(">HH", data[4:8])
+            nfat_arch = struct.unpack(">I", data[4:8])[0]
+            if 45 <= major <= 75:
+                return {
+                    "format": "JAVA_CLASS",
+                    "os": "JVM",
+                    "description": f"Compiled Java Class Bytecode (major {major}, minor {minor})",
+                    "major_version": major,
+                    "minor_version": minor,
+                }
+            if 1 <= nfat_arch <= 32:
+                return {
+                    "format": "Mach-O",
+                    "os": "macOS/iOS",
+                    "description": f"Apple Mach-O Universal FAT Binary ({nfat_arch} architectures)",
+                    "fat_arch_count": nfat_arch,
+                }
         return {"format": "JAVA_CLASS", "os": "JVM", "description": "Compiled Java Class Bytecode (CAFEBABE)"}
 
     # 6. Mach-O
@@ -188,50 +297,100 @@ REGISTRY_PATTERN = re.compile(r"(?:HKEY_LOCAL_MACHINE|HKEY_CURRENT_USER|HKLM|HKC
 
 
 def extract_ioc_strings(data: bytes, max_strings: int = 150) -> Dict[str, Any]:
-    """Extract printable strings and identify potential Indicators of Compromise (IOCs)."""
-    # Extract ASCII strings (min len 4)
-    ascii_strings = re.findall(rb"[\x20-\x7e]{4,}", data)
-    decoded_strings: List[str] = [s.decode("ascii", "replace") for s in ascii_strings[:1000]]
+    """Extract printable strings with exact hex offsets and identify potential Indicators of Compromise (IOCs)."""
+    string_entries: List[Tuple[str, int, str]] = []  # (text, offset, encoding)
 
-    # Also extract UTF-16LE strings
-    wide_strings = re.findall(rb"(?:[\x20-\x7e]\x00){4,}", data)
-    for ws in wide_strings[:500]:
+    # 1. Extract ASCII strings (min len 4) with offsets
+    for m in re.finditer(rb"[\x20-\x7e]{4,}", data):
+        s_text = m.group(0).decode("ascii", "replace")
+        string_entries.append((s_text, m.start(), "ascii"))
+
+    # 2. Extract UTF-16LE strings (min len 4 wide chars = 8 bytes) with offsets
+    for m in re.finditer(rb"(?:[\x20-\x7e]\x00){4,}", data):
         try:
-            decoded_strings.append(ws.decode("utf-16le", "replace"))
+            s_text = m.group(0).decode("utf-16le", "replace")
+            string_entries.append((s_text, m.start(), "utf-16le"))
         except Exception:
             pass
 
-    # Extract specific IOC categories
+    decoded_strings: List[str] = [entry[0] for entry in string_entries]
+
+    # Extract specific IOC categories with exact hex offsets
     urls: List[str] = []
     ips: List[str] = []
     registry_keys: List[str] = []
     suspicious_apis: List[str] = []
+    detailed_iocs: List[Dict[str, Any]] = []
 
-    for s in decoded_strings:
+    for text, offset, encoding in string_entries:
         # URLs
-        for m in URL_PATTERN.finditer(s):
+        for m in URL_PATTERN.finditer(text):
             u = m.group(0)
+            u_offset = offset + (m.start() if encoding == "ascii" else m.start() * 2)
             if u not in urls:
                 urls.append(u)
+                detailed_iocs.append({
+                    "type": "url",
+                    "value": u,
+                    "offset": u_offset,
+                    "offset_hex": f"0x{u_offset:08x}",
+                })
         # IPs
-        for m in IPV4_PATTERN.finditer(s):
+        for m in IPV4_PATTERN.finditer(text):
             ip = m.group(0)
-            # Filter standard private / loopback noise if desired, keep visible for blue team triage
+            ip_offset = offset + (m.start() if encoding == "ascii" else m.start() * 2)
             if ip not in ips:
                 ips.append(ip)
+                detailed_iocs.append({
+                    "type": "ip",
+                    "value": ip,
+                    "offset": ip_offset,
+                    "offset_hex": f"0x{ip_offset:08x}",
+                })
         # Registry
-        for m in REGISTRY_PATTERN.finditer(s):
+        for m in REGISTRY_PATTERN.finditer(text):
             r = m.group(0)
+            r_offset = offset + (m.start() if encoding == "ascii" else m.start() * 2)
             if r not in registry_keys:
                 registry_keys.append(r)
+                detailed_iocs.append({
+                    "type": "registry",
+                    "value": r,
+                    "offset": r_offset,
+                    "offset_hex": f"0x{r_offset:08x}",
+                })
 
-    # Suspicious API keywords in raw bytes
+    # Suspicious API keywords: match raw bytes (ASCII) with offsets
     for pat in SUSPICIOUS_API_PATTERNS:
-        matches = pat.findall(data)
-        if matches:
-            decoded_match = matches[0].decode("ascii", "replace")
-            if decoded_match not in suspicious_apis:
-                suspicious_apis.append(decoded_match)
+        for m in pat.finditer(data):
+            val = m.group(0).decode("ascii", "replace")
+            api_offset = m.start()
+            if val not in suspicious_apis:
+                suspicious_apis.append(val)
+                detailed_iocs.append({
+                    "type": "api",
+                    "value": val,
+                    "offset": api_offset,
+                    "offset_hex": f"0x{api_offset:08x}",
+                })
+
+    # Match suspicious API patterns against decoded UTF-16LE strings as well
+    for text, offset, encoding in string_entries:
+        if encoding == "utf-16le":
+            for pat in SUSPICIOUS_API_PATTERNS:
+                pat_str = pat.pattern.decode("ascii", "replace")
+                m = re.search(pat_str, text, re.IGNORECASE)
+                if m:
+                    val = m.group(0)
+                    api_offset = offset + (m.start() * 2)
+                    if val not in suspicious_apis:
+                        suspicious_apis.append(val)
+                        detailed_iocs.append({
+                            "type": "api",
+                            "value": val,
+                            "offset": api_offset,
+                            "offset_hex": f"0x{api_offset:08x}",
+                        })
 
     return {
         "total_extracted_strings": len(decoded_strings),
@@ -239,6 +398,7 @@ def extract_ioc_strings(data: bytes, max_strings: int = 150) -> Dict[str, Any]:
         "urls_detected": urls[:20],
         "ips_detected": ips[:20],
         "registry_keys_detected": registry_keys[:20],
+        "detailed_iocs": detailed_iocs,
         "sample_strings": decoded_strings[:max_strings],
     }
 
@@ -257,12 +417,27 @@ class BinaryTriageEngine:
 
         try:
             file_size = p.stat().st_size
-            # Read artifact safely
-            with p.open("rb") as f:
-                data = f.read(max_bytes)
+            sha256_hash = hashlib.sha256()
+            md5_hash = hashlib.md5()
+            analysis_chunks: List[bytes] = []
+            bytes_read_for_analysis = 0
 
-            sha256 = hashlib.sha256(data).hexdigest()
-            md5 = hashlib.md5(data).hexdigest()
+            # Stream in 64KB chunks to hash entire file correctly while capping analysis buffer
+            with p.open("rb") as f:
+                while True:
+                    chunk = f.read(64 * 1024)
+                    if not chunk:
+                        break
+                    sha256_hash.update(chunk)
+                    md5_hash.update(chunk)
+                    if bytes_read_for_analysis < max_bytes:
+                        take = min(len(chunk), max_bytes - bytes_read_for_analysis)
+                        analysis_chunks.append(chunk[:take])
+                        bytes_read_for_analysis += take
+
+            data = b"".join(analysis_chunks)
+            sha256 = sha256_hash.hexdigest()
+            md5 = md5_hash.hexdigest()
 
             # Global & block entropy
             global_entropy = calculate_entropy(data)
@@ -274,7 +449,7 @@ class BinaryTriageEngine:
             # IOC String extraction
             ioc_info = extract_ioc_strings(data)
 
-            # Build Evidence-Finding Path
+            # Build Evidence-Finding Path:
             # SHA-256 -> Magic/Offset -> Identified Feature/IOC -> Risk Evaluation
             evidence_chain: List[str] = [
                 f"Artifact SHA-256: {sha256}",
@@ -285,15 +460,35 @@ class BinaryTriageEngine:
                 evidence_chain.append(
                     f"[CONFIRMED PACKING]: Peak entropy {block_entropy['peak_entropy']} indicates packed/encrypted sections."
                 )
-            if ioc_info["suspicious_apis_detected"]:
+            if header_info.get("has_wx_sections"):
                 evidence_chain.append(
-                    f"[CONFIRMED SUSPICIOUS APIS]: {', '.join(ioc_info['suspicious_apis_detected'][:5])}"
+                    f"[CONFIRMED W^X VIOLATION]: Section(s) {', '.join(header_info.get('wx_sections', []))} have simultaneous Write + Execute permissions."
                 )
-            if ioc_info["urls_detected"]:
+            for anomaly in header_info.get("section_anomalies", []):
+                evidence_chain.append(f"[PE SECTION ANOMALY]: {anomaly}")
+
+            # Record IOCs with exact hex offsets:
+            for item in ioc_info.get("detailed_iocs", []):
+                ioc_t = item["type"]
+                ioc_hex = item["offset_hex"]
+                ioc_val = item["value"]
+                if ioc_t == "api":
+                    evidence_chain.append(f"[CONFIRMED SUSPICIOUS APIS] @ {ioc_hex}: {ioc_val}")
+                elif ioc_t == "url":
+                    evidence_chain.append(f"[IOC URLS] @ {ioc_hex}: {ioc_val}")
+                elif ioc_t == "ip":
+                    evidence_chain.append(f"[IOC IPS] @ {ioc_hex}: {ioc_val}")
+                elif ioc_t == "registry":
+                    evidence_chain.append(f"[IOC PERSISTENCE] @ {ioc_hex}: {ioc_val}")
+
+            # Also maintain summary tags if detailed_iocs had none (for backward compatibility)
+            if not any("[CONFIRMED SUSPICIOUS APIS]" in x for x in evidence_chain) and ioc_info["suspicious_apis_detected"]:
+                evidence_chain.append(f"[CONFIRMED SUSPICIOUS APIS]: {', '.join(ioc_info['suspicious_apis_detected'][:5])}")
+            if not any("[IOC URLS]" in x for x in evidence_chain) and ioc_info["urls_detected"]:
                 evidence_chain.append(f"[IOC URLS]: {', '.join(ioc_info['urls_detected'][:3])}")
-            if ioc_info["ips_detected"]:
+            if not any("[IOC IPS]" in x for x in evidence_chain) and ioc_info["ips_detected"]:
                 evidence_chain.append(f"[IOC IPS]: {', '.join(ioc_info['ips_detected'][:3])}")
-            if ioc_info["registry_keys_detected"]:
+            if not any("[IOC PERSISTENCE]" in x for x in evidence_chain) and ioc_info["registry_keys_detected"]:
                 evidence_chain.append(f"[IOC PERSISTENCE]: {', '.join(ioc_info['registry_keys_detected'][:3])}")
 
             # Overall Risk Assessment
@@ -302,6 +497,13 @@ class BinaryTriageEngine:
             if block_entropy["is_packed"]:
                 risk = "High"
                 reasons.append("High entropy packing detected")
+            if header_info.get("has_wx_sections"):
+                risk = "High"
+                reasons.append("W^X violation: Section with simultaneous Write + Execute permissions detected")
+            if header_info.get("section_anomalies"):
+                if risk == "Low":
+                    risk = "Medium"
+                reasons.append(f"PE section anomalies: {', '.join(header_info.get('section_anomalies', [])[:2])}")
             if ioc_info["suspicious_apis_detected"]:
                 if any(api.lower() in ("createremotethread", "writeprocessmemory", "virtualalloc", "beacon", "meterpreter") for api in ioc_info["suspicious_apis_detected"]):
                     risk = "Critical"
@@ -337,6 +539,7 @@ class BinaryTriageEngine:
                     "urls": ioc_info["urls_detected"],
                     "ips": ioc_info["ips_detected"],
                     "registry_keys": ioc_info["registry_keys_detected"],
+                    "detailed_iocs": ioc_info["detailed_iocs"],
                 },
                 "risk_assessment": {
                     "severity": risk,

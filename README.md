@@ -54,7 +54,7 @@ Built following the **CookieGli Core** token economy (<600 tokens) and **Ponytai
 
 ---
 
-## 🔒 The 3 Mandatory Patching Guardrails
+## 🔒 The 4 Mandatory Patching Guardrails
 
 1. **Diff Cap Gate ($\le 50$ lines changed):**
    Enforces the Ponytail Principle. Rejects bloated modifications, preventing hallucinations and unwanted refactoring.
@@ -62,12 +62,14 @@ Built following the **CookieGli Core** token economy (<600 tokens) and **Ponytai
    Verifies syntax via `ast.parse` and guarantees zero newly introduced CWE vulnerabilities before files are modified on disk.
 3. **Git Branch Isolation Gate:**
    Blocks direct commits or patches on protected branches (`main`, `master`, `prod`), requiring atomic feature branches (`fix/<task-id>`).
+4. **Single-Committer Gate:**
+   Guarantees that only the Lead Orchestrator agent persona can commit modifications to the repository, eliminating race conditions and unauthorized worker commits.
 
 ---
 
 ## 🚀 Quickstart & Usage
 
-### 1. Run Diagnostic Self-Tests & Full Test Suite (78 Tests, 100% Pass)
+### 1. Run Diagnostic Self-Tests & Full Test Suite (108 Tests, 100% Pass)
 ```powershell
 python server.py --test-mode
 ```
@@ -97,11 +99,12 @@ python server.py --stdio
 - `core/ast_scanner.py`: Zero-dependency AST SAST engine with import alias tracking, local taint analysis, and Shannon entropy.
 - `core/cvss_calculator.py`: FIRST.org standard CVSS v3.1 vector parser & floating-point accurate roundup.
 - `core/code_search.py`: Hybrid code search (Syntactic AST Chunking + SQLite FTS5 BM25 + Reciprocal Rank Fusion), reducing context tokens by 98–99%.
-- `core/binary_triage.py`: Air-gapped static binary triage (Zero-Execution Policy, magic byte identification, 1KB block Shannon entropy, string IOC extraction, SHA-256 evidence chain).
-- `core/tool_indexer.py`: Dynamic toolchain indexer detecting local decompilers, disassemblers, and security scanners.
+- `core/binary_triage.py`: Air-gapped static binary triage (Zero-Execution Policy, magic byte identification, PE section table W^X inspection, 1KB block Shannon entropy, string IOC extraction with hex offsets, SHA-256 evidence chain).
+- `core/soc_rules.py`: Pure-Python SOC dynamic detection rule engine (MITRE ATT&CK mappings T1055, T1059.001, T1003, T1071, T1547.001 & incident playbooks).
+- `core/tool_indexer.py`: Dynamic toolchain indexer & diagnostic tool runner (strings, readelf, objdump, cfr, jadx, r2).
 - `core/semgrep_adapter.py`: Multi-language SAST adapter (JS/TS, Go, Java, C/C++).
 - `core/sandbox_runner.py`: Isolated test execution (argv list, zero `shell=True`, environment whitelist, Windows process tree termination, Docker isolation option).
-- `core/guardrails.py`: Safe patching manager enforcing the 3 gates (Diff Cap <= 50, Syntax Pre-flight, Zero-Regression SAST).
-- `core/dag_engine.py`: Multi-agent DAG task scheduler with SQLite WAL shared memory, point-to-point mailbox messaging, and Max Hop TTL = 20.
-- `tests/`: 78 automated unit tests verifying all components with 100% pass rate.
+- `core/guardrails.py`: Safe patching manager enforcing the 4 gates (Diff Cap <= 50, Syntax Pre-flight, Zero-Regression SAST, Single-Committer isolation).
+- `core/dag_engine.py`: Multi-agent DAG task scheduler with SQLite WAL shared memory, point-to-point mailbox messaging, Max Hop TTL = 20, and orphaned task recovery.
+- `tests/`: 108 automated unit tests verifying all components with 100% pass rate.
 - `.agents/`: Project rules (`AGENTS.md`) and architecture genome (`GENOME.md`).

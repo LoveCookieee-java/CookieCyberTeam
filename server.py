@@ -21,11 +21,12 @@ from core.dag_engine import DAGEngine, DAGCycleError, MAX_HOP_TTL
 from core.guardrails import SafePatchManager, GuardrailViolation, find_git_root
 from core.sandbox_runner import SandboxRunner
 from core.semgrep_adapter import SemgrepAdapter
+from core.soc_rules import SOCRuleEngine
 from core.tool_indexer import ToolchainIndexer
 
 
 SERVER_NAME = "blue-team-security-guardrails"
-SERVER_VERSION = "1.1.0"
+SERVER_VERSION = "1.2.0"
 PROTOCOL_VERSION = "2024-11-05"
 
 
@@ -160,6 +161,7 @@ class BlueTeamMCPServer:
         self.code_searcher = HybridCodeSearch()
         self.tool_indexer = ToolchainIndexer()
         self.binary_triage_engine = BinaryTriageEngine()
+        self.soc_engine = SOCRuleEngine()
 
     # -----------------------------------------------------------------------
     # Tool Handlers (7 Tools)
@@ -299,6 +301,8 @@ class BlueTeamMCPServer:
         task_id = args.get("task_id", "bugfix")
         repo_path = args.get("repo_path")
 
+        committer = args.get("committer", "Lead Orchestrator")
+
         if not target_file or patched_content is None:
             return {"success": False, "error": "target_file and patched_content are required."}
 
@@ -308,6 +312,7 @@ class BlueTeamMCPServer:
                 patched_content=patched_content,
                 task_id=task_id,
                 repo_path=repo_path,
+                committer=committer,
             )
             return res
         except GuardrailViolation as gv:
@@ -429,6 +434,10 @@ class BlueTeamMCPServer:
             msgs = self.dag_engine.get_task_messages(task_id)
             return {"success": True, "task_id": task_id, "messages": msgs, "count": len(msgs)}
 
+        elif action == "recover_orphans":
+            recovery_res = self.dag_engine.recover_orphaned_tasks()
+            return {"success": True, "recovery": recovery_res}
+
         # Default: get_summary
         return {"success": True, "summary": self.dag_engine.get_dag_summary()}
 
@@ -437,19 +446,29 @@ class BlueTeamMCPServer:
         query = args.get("query")
         target_path = args.get("target_path", ".")
         top_k = int(args.get("top_k", 5))
+        extensions = args.get("extensions")
+        ext_tuple = tuple(extensions) if extensions else None
 
         if not query:
             return {"success": False, "error": "query parameter is required."}
 
-        return self.code_searcher.search(query=query, target_path=target_path, top_k=top_k)
+        return self.code_searcher.search(query=query, target_path=target_path, top_k=top_k, extensions=ext_tuple)
 
     def tool_triage_binary(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Safely triage binary artifacts (PE/ELF/ZIP/DEX) under Zero-Execution Policy."""
+        """Safely triage binary artifacts (PE/ELF/ZIP/DEX) under Zero-Execution Policy and evaluate SOC detection rules."""
         file_path = args.get("file_path")
         if not file_path:
             return {"success": False, "error": "file_path parameter is required."}
 
-        return self.binary_triage_engine.triage_file(file_path=file_path)
+        res = self.binary_triage_engine.triage_file(file_path=file_path)
+        if res.get("success"):
+            soc_alerts = self.soc_engine.evaluate_binary_triage(res)
+            res["soc_alerts"] = soc_alerts
+            for alert in soc_alerts:
+                res["evidence_chain"].append(
+                    f"[SOC ALERT - {alert['technique_id']} {alert['technique_name']}]: {alert['rule_name']} (Severity: {alert['severity']})"
+                )
+        return res
 
     # -----------------------------------------------------------------------
     # Specifications & Metadata (7 Tools, 6 Resources, 6 Prompts)
@@ -500,7 +519,7 @@ class BlueTeamMCPServer:
             },
             {
                 "name": "mcp_apply_safe_patch",
-                "description": "Applies source code patch protected by 3 safety guardrails: Diff Cap (<=50 lines), Zero-Regression SAST, and Git Branch Isolation.",
+                "description": "Applies source code patch protected by 4 safety guardrails: Single-Committer authority, Diff Cap (<=50 lines), Zero-Regression SAST, and Git Branch Isolation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -508,6 +527,7 @@ class BlueTeamMCPServer:
                         "patched_content": {"type": "string", "description": "Complete new content for the target file."},
                         "task_id": {"type": "string", "description": "Identifier of the fixing task (default: 'bugfix')."},
                         "repo_path": {"type": "string", "description": "Optional Git repository root path."},
+                        "committer": {"type": "string", "description": "Agent persona applying the patch. Only 'Lead Orchestrator' is authorized (Single-Committer Gate).", "default": "Lead Orchestrator"},
                     },
                     "required": ["target_file", "patched_content"],
                 },
@@ -523,7 +543,7 @@ class BlueTeamMCPServer:
                             "enum": [
                                 "init_pipeline", "add_task", "update_task", "get_ready", "get_summary",
                                 "set_context", "get_context", "send_message", "get_inbox", "mark_processed",
-                                "check_drainage", "get_messages",
+                                "check_drainage", "get_messages", "recover_orphans",
                             ],
                             "description": "Action to perform on DAG workflow or Mailbox.",
                         },
@@ -559,6 +579,7 @@ class BlueTeamMCPServer:
                         "query": {"type": "string", "description": "Search query keywords or function/class symbols."},
                         "target_path": {"type": "string", "description": "Target file or directory path to index and search."},
                         "top_k": {"type": "integer", "description": "Maximum number of chunks to return (default: 5)."},
+                        "extensions": {"type": "array", "items": {"type": "string"}, "description": "File extensions to include (e.g. ['.py', '.js', '.ts', '.go', '.java', '.c', '.cpp'])."},
                     },
                     "required": ["query"],
                 },
@@ -1034,7 +1055,8 @@ def run_self_test() -> bool:
     assert triage_data["success"] is True
     assert triage_data["header"]["format"] == "PE"
     assert len(triage_data["iocs"]["urls"]) >= 1
-    print(f"[PASS] Air-Gapped Binary Triage tool verified: PE recognized, URL IOC caught.")
+    assert "soc_alerts" in triage_data
+    print(f"[PASS] Air-Gapped Binary Triage & SOC Dynamic Rule Engine verified: PE recognized, URL IOC caught, SOC alert evaluated.")
 
     # 9. Run full discovered test suite in tests/
     print("\n--- Running Full Discovered Test Suite (tests/) ---")

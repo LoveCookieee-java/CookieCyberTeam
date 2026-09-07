@@ -117,3 +117,68 @@ class ToolchainIndexer:
             lines.append(f"| `{name}` | {info['category']} | {status} | {note} |")
 
         return "\n".join(lines)
+
+    ALLOWED_DIAGNOSTIC_TOOLS = {"strings", "readelf", "objdump", "cfr", "jadx", "r2", "radare2"}
+
+    def run_diagnostic_tool(
+        self,
+        tool_name: str,
+        target_file: str | Path,
+        args: Optional[List[str]] = None,
+        timeout: int = 30,
+    ) -> Dict[str, Any]:
+        """
+        Safely execute diagnostic or reverse engineering tool against a target file.
+        Enforces tool whitelisting, argument validation, and execution via SandboxRunner.
+        """
+        tool_clean = tool_name.lower().strip()
+        if tool_clean not in self.ALLOWED_DIAGNOSTIC_TOOLS:
+            return {
+                "success": False,
+                "error": f"Tool '{tool_name}' is not in allowed diagnostic whitelist: {sorted(self.ALLOWED_DIAGNOSTIC_TOOLS)}",
+            }
+
+        # Validate arguments: disallow dangerous shell metacharacters first
+        sanitized_args: List[str] = []
+        if args:
+            disallowed_chars = {";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r"}
+            for a in args:
+                if not isinstance(a, str) or any(c in a for c in disallowed_chars):
+                    return {
+                        "success": False,
+                        "error": f"Argument '{a}' contains forbidden shell metacharacters.",
+                    }
+                sanitized_args.append(a)
+
+        target_p = Path(target_file).resolve()
+        if not target_p.is_file():
+            return {
+                "success": False,
+                "error": f"Target file not found: {target_p}",
+            }
+
+        bin_path = shutil.which(tool_clean)
+        if not bin_path:
+            return {
+                "success": False,
+                "error": f"Diagnostic tool '{tool_clean}' is not installed or not found in system PATH.",
+            }
+
+        argv = [bin_path, *sanitized_args, str(target_p)]
+
+        from core.sandbox_runner import SandboxRunner
+        runner = SandboxRunner(default_timeout=timeout)
+        run_res = runner.run_command(argv, cwd=target_p.parent, timeout=timeout)
+
+        return {
+            "success": run_res.get("exit_code") == 0,
+            "tool_name": tool_clean,
+            "target_file": str(target_p),
+            "argv": argv,
+            "stdout": run_res.get("stdout", ""),
+            "stderr": run_res.get("stderr", ""),
+            "exit_code": run_res.get("exit_code", -1),
+            "timed_out": run_res.get("timed_out", False),
+            "duration_ms": run_res.get("duration_ms", 0),
+            "duration_sec": round(run_res.get("duration_ms", 0) / 1000.0, 4),
+        }

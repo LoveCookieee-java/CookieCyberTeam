@@ -2,6 +2,7 @@
 Unit tests for Air-Gapped Static Binary Triage & Reverse Engineering Engine.
 """
 
+import hashlib
 import os
 import struct
 import tempfile
@@ -163,6 +164,140 @@ class TestBinaryTriage(unittest.TestCase):
         bad_pe_2 = b"MZ" + (b"\x00" * 0x3A) + struct.pack("<I", 0xFFFFFF00) + (b"\x00" * 100)
         res_2 = parse_magic_header(bad_pe_2)
         self.assertFalse(res_2["is_valid_pe"])
+
+    def test_pe_section_table_and_wx_violation(self):
+        """Verify PE section table extraction detects W^X violation and section attributes."""
+        pe_mock = bytearray(b"MZ" + (b"\x00" * 0x3A))
+        pe_offset = 0x80
+        pe_mock.extend(struct.pack("<I", pe_offset))  # e_lfanew
+        pe_mock.extend(b"\x00" * (pe_offset - len(pe_mock)))
+        pe_mock.extend(b"PE\x00\x00")  # Signature (4 bytes)
+        # COFF File Header (20 bytes): Machine=0x8664 (2), NumSections=2 (2), TimeDate=0 (4), PtrSymbol=0 (4), NumSymbols=0 (4), SizeOfOpt=0x10 (2), Chars=0x0002 (2)
+        pe_mock.extend(struct.pack("<H", 0x8664))
+        pe_mock.extend(struct.pack("<H", 2))
+        pe_mock.extend(struct.pack("<I", 0))
+        pe_mock.extend(struct.pack("<I", 0))
+        pe_mock.extend(struct.pack("<I", 0))
+        pe_mock.extend(struct.pack("<H", 0x10))
+        pe_mock.extend(struct.pack("<H", 0x0002))
+        # Optional Header (16 bytes): Magic=0x20b (2), padding 14 bytes
+        pe_mock.extend(struct.pack("<H", 0x20b))
+        pe_mock.extend(b"\x00" * 14)
+        # Section 1: .text (40 bytes)
+        pe_mock.extend(b".text\x00\x00\x00")
+        pe_mock.extend(struct.pack("<I", 0x1000))
+        pe_mock.extend(struct.pack("<I", 0x1000))
+        pe_mock.extend(struct.pack("<I", 0x1000))
+        pe_mock.extend(struct.pack("<I", 0x200))
+        pe_mock.extend(b"\x00" * 12)
+        pe_mock.extend(struct.pack("<I", 0x60000020))  # Code | Execute | Read
+        # Section 2: .wxsec (40 bytes)
+        pe_mock.extend(b".wxsec\x00\x00")
+        pe_mock.extend(struct.pack("<I", 0x1000))
+        pe_mock.extend(struct.pack("<I", 0x2000))
+        pe_mock.extend(struct.pack("<I", 0x1000))
+        pe_mock.extend(struct.pack("<I", 0x1200))
+        pe_mock.extend(b"\x00" * 12)
+        pe_mock.extend(struct.pack("<I", 0xA0000020))  # Execute (0x20000000) | Write (0x80000000)
+
+        info = parse_magic_header(bytes(pe_mock))
+        self.assertTrue(info["is_valid_pe"])
+        self.assertEqual(info["number_of_sections"], 2)
+        self.assertTrue(info["has_wx_sections"])
+        self.assertIn(".wxsec", info["wx_sections"])
+        self.assertEqual(len(info["sections"]), 2)
+        self.assertEqual(info["sections"][0]["name"], ".text")
+        self.assertEqual(info["sections"][1]["name"], ".wxsec")
+
+    def test_macho_fat_vs_java_class_disambiguation(self):
+        """Verify CAFEBABE magic differentiates Java Class bytecode from Apple Mach-O FAT binaries."""
+        # 1. Java Class file: major=55 (Java 11), minor=0
+        java_bytes = b"\xca\xfe\xba\xbe" + struct.pack(">HH", 0, 55) + (b"\x00" * 16)
+        java_res = parse_magic_header(java_bytes)
+        self.assertEqual(java_res["format"], "JAVA_CLASS")
+        self.assertEqual(java_res["major_version"], 55)
+        self.assertEqual(java_res["os"], "JVM")
+
+        # 2. Mach-O FAT: nfat_arch=2 (x86_64 and arm64)
+        macho_bytes = b"\xca\xfe\xba\xbe" + struct.pack(">I", 2) + (b"\x00" * 16)
+        macho_res = parse_magic_header(macho_bytes)
+        self.assertEqual(macho_res["format"], "Mach-O")
+        self.assertEqual(macho_res["fat_arch_count"], 2)
+        self.assertEqual(macho_res["os"], "macOS/iOS")
+
+    def test_utf16le_suspicious_api_and_exact_hex_offsets(self):
+        """Verify UTF-16LE strings and APIs are decoded and tagged with exact 0x{offset:08x} hex offsets."""
+        payload = bytearray(b"\x90" * 0x100)
+        offset_ascii = len(payload)
+        payload.extend(b"VirtualAllocEx\x00")
+        offset_utf16 = len(payload)
+        payload.extend("WriteProcessMemory\x00".encode("utf-16le"))
+
+        ioc = extract_ioc_strings(bytes(payload))
+        self.assertIn("VirtualAlloc", ioc["suspicious_apis_detected"])
+        self.assertIn("WriteProcessMemory", ioc["suspicious_apis_detected"])
+
+        detailed = ioc["detailed_iocs"]
+        self.assertGreaterEqual(len(detailed), 2)
+        api_offsets = {d["value"]: d["offset_hex"] for d in detailed if d["type"] == "api"}
+        self.assertEqual(api_offsets["VirtualAlloc"], f"0x{offset_ascii:08x}")
+        self.assertEqual(api_offsets["WriteProcessMemory"], f"0x{offset_utf16:08x}")
+
+    def test_streaming_hash_large_file(self):
+        """Verify streaming chunked hashing computes full SHA256 across files larger than max_bytes buffer."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample = Path(tmp_dir) / "large_binary.bin"
+            chunk = b"EXEMPLAR_PAYLOAD_BUFFER_" * 100
+            full_data = chunk * 25
+            sample.write_bytes(full_data)
+
+            res = self.engine.triage_file(sample, max_bytes=1024)
+            self.assertTrue(res["success"])
+            self.assertTrue(res["truncated"])
+            self.assertEqual(res["file_size_bytes"], len(full_data))
+            expected_sha256 = hashlib.sha256(full_data).hexdigest()
+            self.assertEqual(res["hashes"]["sha256"], expected_sha256)
+
+    def test_macho_fat_64_bit_magic(self):
+        """Verify CAFEBABF (FAT_MAGIC_64) is recognized as Apple Mach-O Universal FAT 64-bit."""
+        macho64_bytes = b"\xca\xfe\xba\xbf" + struct.pack(">I", 3) + (b"\x00" * 16)
+        res = parse_magic_header(macho64_bytes)
+        self.assertEqual(res["format"], "Mach-O")
+        self.assertEqual(res["fat_arch_count"], 3)
+        self.assertIn("64-bit", res["description"])
+
+    def test_pe_section_anomalies_out_of_bounds_and_truncated(self):
+        """Verify truncated section table, out-of-bounds raw data pointer, and empty section names generate anomalies."""
+        pe_mock = bytearray(b"MZ" + (b"\x00" * 0x3A))
+        pe_offset = 0x80
+        pe_mock.extend(struct.pack("<I", pe_offset))
+        pe_mock.extend(b"\x00" * (pe_offset - len(pe_mock)))
+        pe_mock.extend(b"PE\x00\x00")
+        # COFF File Header: NumSections = 3, SizeOfOpt = 0x10
+        pe_mock.extend(struct.pack("<H", 0x8664))
+        pe_mock.extend(struct.pack("<H", 3))  # Claims 3 sections, but we only supply 1!
+        pe_mock.extend(struct.pack("<I", 0))
+        pe_mock.extend(struct.pack("<I", 0))
+        pe_mock.extend(struct.pack("<I", 0))
+        pe_mock.extend(struct.pack("<H", 0x10))
+        pe_mock.extend(struct.pack("<H", 0x0002))
+        pe_mock.extend(struct.pack("<H", 0x20b))
+        pe_mock.extend(b"\x00" * 14)
+        # Section 1: Empty name, raw pointer extends past file end
+        pe_mock.extend(b"\x00" * 8)  # Empty section name
+        pe_mock.extend(struct.pack("<I", 0x1000))
+        pe_mock.extend(struct.pack("<I", 0x1000))
+        pe_mock.extend(struct.pack("<I", 0x8000))  # Raw size = 32KB
+        pe_mock.extend(struct.pack("<I", 0x1000))  # Raw ptr = 0x1000 (past mock length!)
+        pe_mock.extend(b"\x00" * 12)
+        pe_mock.extend(struct.pack("<I", 0x60000020))
+
+        info = parse_magic_header(bytes(pe_mock))
+        self.assertTrue(info["is_valid_pe"])
+        anomalies = " ".join(info["section_anomalies"])
+        self.assertIn("Truncated section table", anomalies)
+        self.assertIn("extends beyond file boundary", anomalies)
+        self.assertIn("empty or non-printable", anomalies)
 
 
 if __name__ == "__main__":

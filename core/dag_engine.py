@@ -136,6 +136,21 @@ class DAGEngine:
             )
             conn.commit()
 
+    def get_audit_log(self, event_type: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """Retrieve audit log entries, optionally filtered by event_type."""
+        with self._connection() as conn:
+            if event_type:
+                rows = conn.execute(
+                    "SELECT * FROM audit_log WHERE event_type = ? ORDER BY id ASC LIMIT ?",
+                    (event_type, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM audit_log ORDER BY id ASC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+        return [dict(r) for r in rows]
+
     def add_task(
         self,
         task_id: str,
@@ -266,6 +281,51 @@ class DAGEngine:
 
         self.log_event("TASK_STATUS_UPDATED", "DAGEngine", f"Task '{task_id}' -> {status}")
         return True
+
+    def recover_orphaned_tasks(self) -> Dict[str, Any]:
+        """
+        Scan for tasks stuck in RUNNING state (e.g. after unexpected server shutdown/restart).
+        Verifies dependencies: if all dependencies are COMPLETED, resets to READY; otherwise resets to PENDING.
+        Logs TASK_ORPHAN_RECOVERED audit event.
+        """
+        with self._connection() as conn:
+            all_tasks = conn.execute("SELECT * FROM tasks").fetchall()
+
+        completed_ids = {t["task_id"] for t in all_tasks if t["status"] == "COMPLETED"}
+        running_tasks = [t for t in all_tasks if t["status"] == "RUNNING"]
+        recovered: List[Dict[str, Any]] = []
+        now = self._now()
+
+        with self._connection() as conn:
+            for t in running_tasks:
+                t_id = t["task_id"]
+                deps = json.loads(t["dependencies"])
+                all_deps_completed = all(dep in completed_ids for dep in deps)
+                new_status = "READY" if all_deps_completed else "PENDING"
+
+                conn.execute(
+                    "UPDATE tasks SET status = ?, updated_at = ? WHERE task_id = ?",
+                    (new_status, now, t_id),
+                )
+                recovered.append({
+                    "task_id": t_id,
+                    "name": t["name"],
+                    "old_status": "RUNNING",
+                    "new_status": new_status,
+                    "dependencies": deps,
+                })
+                self.log_event(
+                    "TASK_ORPHAN_RECOVERED",
+                    "DAGEngine",
+                    f"Orphaned task '{t_id}' recovered from RUNNING to {new_status}",
+                )
+            conn.commit()
+
+        return {
+            "success": True,
+            "recovered_count": len(recovered),
+            "recovered_tasks": recovered,
+        }
 
     def get_task(self, task_id: str) -> Optional[Dict[str, Any]]:
         """Fetch full details for a single task."""

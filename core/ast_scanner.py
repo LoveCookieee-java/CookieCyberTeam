@@ -147,9 +147,20 @@ class ASTScannerVisitor(ast.NodeVisitor):
                         remediation="Store secrets in environment variables or a secure key management vault.",
                     ))
 
-            # Track local taint for SQL queries
+            # Track local taint for SQL queries with alias preservation & clearing
             if value and self._is_potential_sql_expr(value):
                 self.tainted_vars[target.id] = "sql"
+            elif value and self._references_tainted_var(value):
+                self.tainted_vars[target.id] = "sql"
+            else:
+                self.tainted_vars.pop(target.id, None)
+
+    def _references_tainted_var(self, node: ast.AST) -> bool:
+        """Check if an AST expression references any currently tainted variable."""
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Name) and sub.id in self.tainted_vars:
+                return True
+        return False
 
     def visit_Assign(self, node: ast.Assign) -> None:
         # Check for CWE-798 and SQL taint in standard variable assignments
@@ -162,6 +173,11 @@ class ASTScannerVisitor(ast.NodeVisitor):
         self._check_assign_target_and_value(node.target, node.value, node.lineno)
         self.generic_visit(node)
 
+    def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
+        # Check for CWE-798 and SQL taint in walrus operator assignments (x := expr)
+        self._check_assign_target_and_value(node.target, node.value, node.lineno)
+        self.generic_visit(node)
+
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         # Track augmented assignments (e.g. sql += user_input)
         if isinstance(node.target, ast.Name):
@@ -169,8 +185,18 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 self.tainted_vars[node.target.id] = "sql"
         self.generic_visit(node)
 
+    def _is_pure_static_constant_binop(self, node: ast.AST) -> bool:
+        """Recursively check if a BinOp (Add) tree consists purely of Constant nodes."""
+        if isinstance(node, ast.Constant):
+            return True
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            return self._is_pure_static_constant_binop(node.left) and self._is_pure_static_constant_binop(node.right)
+        return False
+
     def _is_potential_sql_expr(self, node: ast.AST) -> bool:
         """Check if an expression creates a SQL statement via f-string, concat, format, or %."""
+        if isinstance(node, ast.NamedExpr):
+            return self._is_potential_sql_expr(node.value)
         if isinstance(node, ast.JoinedStr):
             # Formatted f-string: check if contains SQL keywords
             raw_text = ""
@@ -181,8 +207,16 @@ class ASTScannerVisitor(ast.NodeVisitor):
             if words & self.SQL_KEYWORDS and any(isinstance(p, ast.FormattedValue) for p in node.values):
                 return True
         elif isinstance(node, ast.BinOp):
-            if isinstance(node.op, (ast.Add, ast.Mod)):
-                # Concatenation or % formatting
+            if isinstance(node.op, ast.Add):
+                # Static string concat false positive elimination
+                if self._is_pure_static_constant_binop(node):
+                    return False
+                raw_text = self._extract_string_literals(node)
+                words = set(re.findall(r"\b[A-Za-z]+\b", raw_text.upper()))
+                if words & self.SQL_KEYWORDS:
+                    return True
+            elif isinstance(node.op, ast.Mod):
+                # % formatting
                 raw_text = self._extract_string_literals(node)
                 words = set(re.findall(r"\b[A-Za-z]+\b", raw_text.upper()))
                 if words & self.SQL_KEYWORDS:
@@ -256,14 +290,26 @@ class ASTScannerVisitor(ast.NodeVisitor):
             func_name.endswith((".execute", ".executemany", ".executescript"))
             or func_name in ("execute", "executemany", "executescript")
         ):
+            first_arg = None
             if node.args:
                 first_arg = node.args[0]
+            elif node.keywords:
+                for kw in node.keywords:
+                    if kw.arg in ("query", "sql", "operation", "statement") or first_arg is None:
+                        first_arg = kw.value
+                        if kw.arg in ("query", "sql", "operation", "statement"):
+                            break
+
+            if first_arg is not None:
+                unwrapped_arg = first_arg.value if isinstance(first_arg, ast.NamedExpr) else first_arg
                 is_sqli = False
                 # Direct f-string, concat, or format in execute()
-                if self._is_potential_sql_expr(first_arg):
+                if self._is_potential_sql_expr(unwrapped_arg):
                     is_sqli = True
                 # Tainted variable passed in execute()
-                elif isinstance(first_arg, ast.Name) and first_arg.id in self.tainted_vars:
+                elif isinstance(unwrapped_arg, ast.Name) and unwrapped_arg.id in self.tainted_vars:
+                    is_sqli = True
+                elif self._references_tainted_var(unwrapped_arg):
                     is_sqli = True
 
                 if is_sqli:
@@ -426,22 +472,45 @@ class ASTScanner:
 
     def scan_git_diff(
         self,
-        repo_path: str | Path,
-        file_path: str | Path,
+        file_path_or_repo: str | Path,
+        file_path: Optional[str | Path] = None,
         base_commit: str = "HEAD",
     ) -> List[Finding]:
         """
         Run true Delta Scanning on modified lines extracted from git diff.
+        Supports both scan_git_diff(file_path) and scan_git_diff(repo_path, file_path).
         """
-        repo = Path(repo_path).resolve()
-        target = Path(file_path).resolve()
+        if file_path is None:
+            target = Path(file_path_or_repo).resolve()
+            repo = target.parent
+            for parent in [target.parent, *target.parents]:
+                if (parent / ".git").exists():
+                    repo = parent
+                    break
+        else:
+            repo = Path(file_path_or_repo).resolve()
+            target = Path(file_path).resolve()
         rel_path = target.relative_to(repo) if target.is_relative_to(repo) else target
+        rel_posix = rel_path.as_posix() if hasattr(rel_path, "as_posix") else str(rel_path).replace("\\", "/")
+
+        # Check if file is tracked by git
+        ls_argv = ["git", "ls-files", "--error-unmatch", "--", rel_posix]
+        try:
+            ls_res = subprocess.run(ls_argv, cwd=str(repo), capture_output=True, text=True, shell=False)
+            if ls_res.returncode != 0:
+                # Untracked / newly created file: scan 100% of lines
+                return self.scan_file(target, modified_lines=None)
+        except Exception:
+            return self.scan_file(target, modified_lines=None)
 
         # Extract modified line numbers using git diff
-        argv = ["git", "diff", "-U0", base_commit, "--", str(rel_path)]
+        argv = ["git", "diff", "-U0", base_commit, "--", rel_posix]
         try:
             res = subprocess.run(argv, cwd=str(repo), capture_output=True, text=True, shell=False)
-            modified_lines = self._parse_diff_added_lines(res.stdout)
+            if res.returncode != 0:
+                modified_lines = None
+            else:
+                modified_lines = self._parse_diff_added_lines(res.stdout)
         except Exception:
             modified_lines = None
 

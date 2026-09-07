@@ -4,6 +4,7 @@ Unit tests for Pure-Python AST SAST Scanner & Semgrep Adapter.
 
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 from core.ast_scanner import ASTScanner, calculate_shannon_entropy
 from core.semgrep_adapter import SemgrepAdapter
 
@@ -186,6 +187,82 @@ class TestASTScanner(unittest.TestCase):
         cwes = {f.cwe_id for f in findings}
         self.assertIn("CWE-78", cwes)
         self.assertIn("CWE-502", cwes)
+
+    def test_untracked_file_delta_scan(self):
+        """Verify untracked files scan 100% of lines (modified_lines=None) instead of returning 0 findings."""
+        code = "import os\ndef run(x):\n    os.system(x)\n"
+        with patch("subprocess.run") as mock_sub:
+            # git ls-files --error-unmatch returns 1 (untracked)
+            mock_sub.return_value = MagicMock(returncode=1, stdout="")
+            with patch("pathlib.Path.read_text", return_value=code):
+                with patch("pathlib.Path.is_file", return_value=True):
+                    with patch("pathlib.Path.exists", return_value=True):
+                        findings = self.scanner.scan_git_diff("untracked_module.py")
+                        cwe78 = [f for f in findings if f.cwe_id == "CWE-78"]
+                        self.assertEqual(len(cwe78), 1)
+
+    def test_taint_cleared_on_reassignment(self):
+        """Verify reassigning tainted variable to a static constant clears taint, while alias reassign propagates it."""
+        code = (
+            "import sqlite3\n"
+            "cur = sqlite3.connect(':memory:').cursor()\n"
+            "def test_taint(user_input):\n"
+            "    q = 'SELECT * FROM users WHERE id = ' + user_input\n"
+            "    q = 'SELECT * FROM users WHERE id = 1'\n"  # Cleared taint
+            "    cur.execute(q)\n"  # Safe, should NOT flag
+            "    q2 = 'SELECT * FROM users WHERE name = ' + user_input\n"
+            "    alias = q2\n"  # Propagated taint
+            "    cur.execute(alias)\n"  # Vulnerable, should flag
+        )
+        findings = self.scanner.scan_code(code)
+        cwe89 = [f for f in findings if f.cwe_id == "CWE-89"]
+        self.assertEqual(len(cwe89), 1)
+        self.assertEqual(cwe89[0].line_number, 9)
+
+    def test_static_string_binop_not_flagged_sqli(self):
+        """Verify concatenating static string literals does not produce false positive CWE-89."""
+        code = (
+            "import sqlite3\n"
+            "cur = sqlite3.connect(':memory:').cursor()\n"
+            "def static_query():\n"
+            "    q = 'SELECT id, name ' + 'FROM users ' + 'WHERE active = 1'\n"
+            "    cur.execute(q)\n"
+            "    cur.execute('SELECT count(*) ' + 'FROM logs')\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe89 = [f for f in findings if f.cwe_id == "CWE-89"]
+        self.assertEqual(len(cwe89), 0)
+
+    def test_walrus_named_expr_sqli_and_secrets(self):
+        """Verify walrus operator := detection for hardcoded secrets and SQL injection."""
+        code = (
+            "import sqlite3\n"
+            "cur = sqlite3.connect(':memory:').cursor()\n"
+            "def check_session(uid):\n"
+            "    if (secret := 'ghp_0123456789abcdefghijklmnopqrstuvwxyz'):\n"
+            "        pass\n"
+            "    if cur.execute(q := f'SELECT * FROM users WHERE id = {uid}'):\n"
+            "        return True\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwes = {f.cwe_id for f in findings}
+        self.assertIn("CWE-798", cwes)
+        self.assertIn("CWE-89", cwes)
+
+    def test_sqli_taint_propagation_with_concat_and_kwargs(self):
+        """Verify taint is preserved across concatenations without SQL keywords and with kwargs."""
+        code = (
+            "import sqlite3\n"
+            "cur = sqlite3.connect(':memory:').cursor()\n"
+            "def query_user(uid):\n"
+            "    q = f'SELECT * FROM users WHERE id = {uid}'\n"
+            "    q = q + ' AND active = 1'\n"
+            "    cur.execute(operation=q)\n"
+            "    cur.execute(q + ' LIMIT 5')\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe89 = [f for f in findings if f.cwe_id == "CWE-89"]
+        self.assertEqual(len(cwe89), 2)
 
 
 if __name__ == "__main__":

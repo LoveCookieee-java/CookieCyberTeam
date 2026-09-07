@@ -152,6 +152,85 @@ class TestCodeSearch(unittest.TestCase):
             first = res["results"][0]
             self.assertEqual(first["name"], "authenticate_user")
 
+    def test_multi_lang_chunking_js_go_java_c(self):
+        """Verify syntactic chunking for JS/TS, Go, Java, and C/C++ without external parsers."""
+        js_code = (
+            "class AuthService {\n"
+            "  async login(user, pass) {\n"
+            "    return true;\n"
+            "  }\n"
+            "}\n"
+        )
+        go_code = (
+            "package main\n"
+            "func ProcessPacket(data []byte) (int, error) {\n"
+            "  return len(data), nil\n"
+            "}\n"
+        )
+        java_code = (
+            "public class TokenValidator {\n"
+            "  public boolean isValid(String token) {\n"
+            "    return token != null;\n"
+            "  }\n"
+            "}\n"
+        )
+
+        js_chunks = self.chunker.chunk_multi_lang(js_code, "auth.js")
+        self.assertTrue(any(c.name == "AuthService" for c in js_chunks))
+
+        go_chunks = self.chunker.chunk_multi_lang(go_code, "packet.go")
+        self.assertTrue(any(c.name == "ProcessPacket" for c in go_chunks))
+
+        java_chunks = self.chunker.chunk_multi_lang(java_code, "TokenValidator.java")
+        self.assertTrue(any(c.name == "TokenValidator" for c in java_chunks))
+
+    def test_persistent_mtime_disk_cache_skips_unchanged(self):
+        """Verify SQLite WAL cache tracks file mtime across sessions to prevent RAM churn."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "test_cache.db"
+            searcher1 = FTS5BM25Searcher(in_memory=False, db_path=db_path)
+            try:
+                chunks = self.chunker.chunk_code(SAMPLE_CODE, file_path="auth_service.py")
+                searcher1.index_chunks(chunks)
+                test_mtime = 1718000000.0
+                searcher1.record_file_meta("auth_service.py", mtime=test_mtime, count=len(chunks))
+                
+                cached_mtime = searcher1.get_indexed_mtime("auth_service.py")
+                self.assertEqual(cached_mtime, test_mtime)
+            finally:
+                searcher1.close()
+
+            # Re-open database from disk and verify metadata persisted
+            searcher2 = FTS5BM25Searcher(in_memory=False, db_path=db_path)
+            try:
+                persisted_mtime = searcher2.get_indexed_mtime("auth_service.py")
+                self.assertEqual(persisted_mtime, test_mtime)
+            finally:
+                searcher2.close()
+
+    def test_extensions_normalization_without_leading_dot(self):
+        """Verify extensions specified without leading dot (e.g. ['py']) are properly normalized and searched."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            fpath = Path(tmp_dir) / "handler.py"
+            fpath.write_text("def handle_request(): return 200\n", encoding="utf-8")
+
+            res = self.hybrid.search("handle_request", target_path=tmp_dir, extensions=["py"])
+            self.assertTrue(res["success"])
+            self.assertGreaterEqual(res["total_matches"], 1)
+
+    def test_multi_lang_chunking_with_comment_braces(self):
+        """Verify line comments containing braces '// {' do not distort brace depth."""
+        code = (
+            "function processItem(item) {\n"
+            "  // { comment brace\n"
+            "  return item.value;\n"
+            "}\n"
+        )
+        chunks = self.chunker.chunk_multi_lang(code, "item.js")
+        self.assertEqual(len(chunks), 1)
+        self.assertEqual(chunks[0].name, "processItem")
+        self.assertEqual(chunks[0].end_line, 4)
+
 
 if __name__ == "__main__":
     unittest.main()

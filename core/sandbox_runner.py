@@ -30,6 +30,14 @@ SAFE_ENV_KEYS = {
     "WINDIR",
     "LANG",
     "LC_ALL",
+    # Docker daemon connection & user profile paths
+    "DOCKER_HOST",
+    "DOCKER_CONFIG",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "DOCKER_CONTEXT",
+    "DOCKER_TLS_VERIFY",
+    "DOCKER_CERT_PATH",
 }
 
 BLOCKED_KEYWORD_PATTERNS = {

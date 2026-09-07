@@ -116,14 +116,113 @@ class ASTCodeChunker:
         chunks.sort(key=lambda c: c.start_line)
         return chunks
 
+    CLASS_PATTERNS = [
+        re.compile(r"^\s*(?:export\s+|public\s+|private\s+|protected\s+|static\s+|abstract\s+)*(?:class|interface|struct|enum)\s+([A-Za-z0-9_]+)"),
+        re.compile(r"^\s*type\s+([A-Za-z0-9_]+)\s+(?:struct|interface)\b"),
+    ]
+    FUNC_PATTERNS = [
+        re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Za-z0-9_]+)\s*\("),
+        re.compile(r"^\s*(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\("),
+        re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z0-9_]+)\s*=>"),
+        re.compile(r"^\s*(?:export\s+|public\s+|private\s+|protected\s+|static\s+|async\s+|inline\s+|virtual\s+)*(?:[A-Za-z0-9_<>[\]*&:]+\s+)+([A-Za-z0-9_]+)\s*\([^;{}]*\)\s*\{?"),
+    ]
+
+    def chunk_multi_lang(self, code_str: str, file_path: str = "<memory>") -> List[CodeChunk]:
+        """Syntactic chunking for JS/TS, Go, Java, C/C++ via brace and declaration tracking."""
+        chunks: List[CodeChunk] = []
+        lines = code_str.splitlines(keepends=True)
+        n_lines = len(lines)
+        i = 0
+
+        while i < n_lines:
+            line = lines[i]
+            matched_name = None
+            chunk_type = None
+
+            for pat in self.CLASS_PATTERNS:
+                m = pat.match(line)
+                if m:
+                    matched_name = m.group(1)
+                    chunk_type = "class"
+                    break
+
+            if not matched_name:
+                for pat in self.FUNC_PATTERNS:
+                    m = pat.match(line)
+                    if m:
+                        matched_name = m.group(1)
+                        chunk_type = "function"
+                        break
+
+            if matched_name:
+                start_line = i + 1
+                brace_depth = 0
+                started = False
+                end_line = start_line
+
+                for j in range(i, n_lines):
+                    curr_l = lines[j]
+                    code_only = curr_l.split("//", 1)[0]
+                    for ch in code_only:
+                        if ch == "{":
+                            brace_depth += 1
+                            started = True
+                        elif ch == "}":
+                            brace_depth -= 1
+                    if started and brace_depth <= 0:
+                        end_line = j + 1
+                        break
+                else:
+                    if started and brace_depth > 0:
+                        end_line = n_lines
+
+                snippet = "".join(lines[i:end_line])
+                chunk_id = f"{Path(file_path).name}::{matched_name}:{start_line}"
+                chunks.append(CodeChunk(
+                    chunk_id=chunk_id,
+                    name=matched_name,
+                    chunk_type=chunk_type or "block",
+                    file_path=str(file_path),
+                    start_line=start_line,
+                    end_line=end_line,
+                    content=snippet,
+                    docstring="",
+                    token_count_est=self.estimate_tokens(snippet),
+                ))
+                i = max(i + 1, end_line)
+            else:
+                i += 1
+
+        if not chunks and lines:
+            content = "".join(lines)
+            chunks.append(CodeChunk(
+                chunk_id=f"{Path(file_path).name}:1-{len(lines)}",
+                name=Path(file_path).stem,
+                chunk_type="module",
+                file_path=str(file_path),
+                start_line=1,
+                end_line=len(lines),
+                content=content,
+                docstring="",
+                token_count_est=self.estimate_tokens(content),
+            ))
+
+        return chunks
+
     def chunk_file(self, file_path: str | Path) -> List[CodeChunk]:
-        """Read and chunk a single file."""
+        """Read and chunk a single file, routing Python to AST and other languages to multi-lang tokenizer."""
         p = Path(file_path).resolve()
         if not p.is_file():
             return []
         try:
             content = p.read_text(encoding="utf-8", errors="replace")
-            return self.chunk_code(content, file_path=str(p))
+            suffix = p.suffix.lower()
+            if suffix == ".py":
+                return self.chunk_code(content, file_path=str(p))
+            elif suffix in (".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".c", ".cpp", ".h", ".hpp"):
+                return self.chunk_multi_lang(content, file_path=str(p))
+            else:
+                return self.chunk_code(content, file_path=str(p))
         except Exception:
             return []
 
@@ -141,20 +240,33 @@ def calculate_rrf(ranking_lists: List[List[str]], k: int = 60) -> Dict[str, floa
 
 
 class FTS5BM25Searcher:
-    """Zero-dependency SQLite FTS5 BM25 Lexical searcher for code chunks."""
+    """Zero-dependency SQLite FTS5 BM25 Lexical searcher for code chunks with persistent WAL cache."""
 
-    def __init__(self, in_memory: bool = True, db_path: Optional[str | Path] = None):
+    def __init__(self, in_memory: bool = False, db_path: Optional[str | Path] = None):
         self.in_memory = in_memory
-        self.db_path = ":memory:" if in_memory else str(db_path or ".cookiegli/ast_code_index.db")
+        self.db_path = ":memory:" if in_memory else str(db_path or ".cookiegli/ast_cache.db")
         if not in_memory:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        if not in_memory:
+            self.conn.execute("PRAGMA journal_mode=WAL;")
+            self.conn.execute("PRAGMA synchronous=NORMAL;")
         self.fts5_supported = self._init_schema()
 
     def _init_schema(self) -> bool:
-        """Create virtual table with FTS5 or fallback table."""
+        """Create virtual table with FTS5 or fallback table, and file metadata table."""
+        # File metadata table for mtime checking
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS file_index_meta (
+                file_path TEXT PRIMARY KEY,
+                mtime REAL NOT NULL,
+                chunk_count INTEGER NOT NULL
+            );
+        """)
+        self.conn.commit()
+
         try:
             self.conn.execute("""
                 CREATE VIRTUAL TABLE IF NOT EXISTS code_chunks_fts USING fts5(
@@ -190,9 +302,34 @@ class FTS5BM25Searcher:
             self.conn.commit()
             return False
 
+    def get_indexed_mtime(self, file_path: str) -> Optional[float]:
+        """Get cached file modification time if indexed."""
+        cursor = self.conn.execute(
+            "SELECT mtime FROM file_index_meta WHERE file_path = ?",
+            (file_path,),
+        )
+        row = cursor.fetchone()
+        return float(row["mtime"]) if row else None
+
+    def delete_file_chunks(self, file_path: str) -> None:
+        """Delete old indexed chunks and metadata for a file."""
+        self.conn.execute("DELETE FROM code_chunks_fts WHERE file_path = ?", (file_path,))
+        self.conn.execute("DELETE FROM file_index_meta WHERE file_path = ?", (file_path,))
+        self.conn.commit()
+
+    def record_file_meta(self, file_path: str, mtime: float, count: Optional[int] = None, chunk_count: Optional[int] = None) -> None:
+        """Record file metadata after indexing."""
+        actual_count = count if count is not None else (chunk_count if chunk_count is not None else 0)
+        self.conn.execute(
+            "INSERT OR REPLACE INTO file_index_meta (file_path, mtime, chunk_count) VALUES (?, ?, ?)",
+            (file_path, mtime, actual_count),
+        )
+        self.conn.commit()
+
     def clear(self) -> None:
-        """Clear indexed chunks."""
+        """Clear all indexed chunks and metadata."""
         self.conn.execute("DELETE FROM code_chunks_fts;")
+        self.conn.execute("DELETE FROM file_index_meta;")
         self.conn.commit()
 
     def index_chunks(self, chunks: List[CodeChunk]) -> None:
@@ -370,53 +507,73 @@ class SembleAdapter:
         return None
 
 
+DEFAULT_SEARCH_EXTENSIONS: Tuple[str, ...] = (
+    ".py", ".js", ".jsx", ".ts", ".tsx", ".go", ".java", ".c", ".cpp", ".h", ".hpp"
+)
+
+
 class HybridCodeSearch:
     """
     Main Code Search Orchestrator.
-    Combines AST syntactic chunking, SQLite FTS5 BM25, and optional Semble ranking.
+    Combines AST syntactic chunking, SQLite FTS5 BM25 with WAL disk caching, and optional Semble ranking.
     """
 
-    def __init__(self):
+    def __init__(self, in_memory: bool = False, db_path: Optional[str | Path] = None):
         self.chunker = ASTCodeChunker()
-        self.searcher = FTS5BM25Searcher(in_memory=True)
+        self.searcher = FTS5BM25Searcher(in_memory=in_memory, db_path=db_path or ".cookiegli/ast_cache.db")
         self.semble = SembleAdapter()
 
-    def index_directory(self, dir_path: str | Path, extensions: Tuple[str, ...] = (".py",)) -> int:
-        """Scan and index all matching source code files in directory."""
+    def index_directory(
+        self,
+        dir_path: str | Path,
+        extensions: Optional[Tuple[str, ...]] = None,
+    ) -> int:
+        """Scan and index all matching source code files in directory using incremental mtime caching."""
         p = Path(dir_path).resolve()
         if not p.exists():
             return 0
 
-        self.searcher.clear()
-        total_chunks = 0
-        all_chunks: List[CodeChunk] = []
-
+        raw_exts = extensions or DEFAULT_SEARCH_EXTENSIONS
+        target_exts = tuple(e if e.startswith(".") else f".{e}" for e in raw_exts)
         files_to_scan: List[Path] = []
         if p.is_file():
             files_to_scan.append(p)
         else:
-            for ext in extensions:
+            for ext in target_exts:
                 files_to_scan.extend(p.rglob(f"*{ext}"))
 
+        indexed_chunks = 0
         for f in files_to_scan:
-            # Skip virtual environments, hidden directories, pycache
+            # Skip virtual environments, hidden directories, pycache, .cookiegli cache
             parts = set(f.parts)
-            if any(bad in parts for bad in {".venv", "venv", ".git", "__pycache__", "build", "dist"}):
+            if any(bad in parts for bad in {".venv", "venv", ".git", "__pycache__", "build", "dist", ".cookiegli"}):
                 continue
+            try:
+                st_mtime = f.stat().st_mtime
+            except Exception:
+                continue
+
+            file_str = str(f)
+            cached_mtime = self.searcher.get_indexed_mtime(file_str)
+            # Incremental cache: if file modification time has not changed, skip re-chunking (<10ms)
+            if cached_mtime is not None and abs(cached_mtime - st_mtime) < 0.001:
+                continue
+
+            self.searcher.delete_file_chunks(file_str)
             chunks = self.chunker.chunk_file(f)
-            all_chunks.extend(chunks)
+            if chunks:
+                self.searcher.index_chunks(chunks)
+            self.searcher.record_file_meta(file_str, st_mtime, len(chunks))
+            indexed_chunks += len(chunks)
 
-        if all_chunks:
-            self.searcher.index_chunks(all_chunks)
-            total_chunks = len(all_chunks)
-
-        return total_chunks
+        return indexed_chunks
 
     def search(
         self,
         query: str,
         target_path: str | Path,
         top_k: int = 5,
+        extensions: Optional[Tuple[str, ...]] = None,
     ) -> Dict[str, Any]:
         """
         Execute search returning concise AST chunks (< 100 tokens each).
@@ -437,8 +594,8 @@ class HybridCodeSearch:
                     "results": semble_res,
                 }
 
-        # 2. Pure-Python AST Chunking + SQLite FTS5 BM25
-        self.index_directory(target)
+        # 2. Pure-Python AST Chunking + SQLite FTS5 BM25 with incremental mtime cache
+        self.index_directory(target, extensions=extensions)
         fts_matches = self.searcher.search(query, top_k=top_k * 2)
 
         # RRF re-ranking combining exact symbol name hits and content hits
@@ -492,3 +649,7 @@ class HybridCodeSearch:
             "total_matches": len(final_results),
             "results": final_results,
         }
+
+    def close(self) -> None:
+        """Close database connection."""
+        self.searcher.close()
