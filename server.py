@@ -253,7 +253,7 @@ class BlueTeamMCPServer:
             for f in findings
         ]
 
-        return {
+        res: Dict[str, Any] = {
             "success": True,
             "total_findings": len(findings),
             "max_cvss_score": max_cvss,
@@ -262,6 +262,13 @@ class BlueTeamMCPServer:
             "residual_vulnerabilities": residual_vulnerabilities,
             "findings": findings,
         }
+
+        output_format = str(args.get("output_format", "json")).lower()
+        if output_format == "sarif":
+            res["output_format"] = "sarif"
+            res["sarif"] = self.scanner.to_sarif(findings)
+
+        return res
 
     def tool_execute_sandbox_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run tests under isolated sandbox environment."""
@@ -551,13 +558,29 @@ class BlueTeamMCPServer:
         )
 
     def tool_submit_dynamic_sandbox(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Submit a binary artifact to an external dynamic analysis sandbox (CAPEv2 / Cuckoo)."""
+        """Submit a binary artifact to an external dynamic analysis sandbox (CAPEv2 / Cuckoo) or poll task status."""
+        check_task_id = args.get("task_id")
+        if check_task_id is None:
+            check_task_id = args.get("check_status_task_id")
         file_path = args.get("file_path")
+
+        if check_task_id is not None:
+            return self.cape_adapter.check_task_status(task_id=check_task_id, target_file=file_path)
+
         if not file_path:
-            return {"success": False, "error": "file_path parameter is required."}
+            return {"success": False, "error": "file_path parameter is required when not checking status with task_id."}
+
         timeout = int(args.get("timeout", 120))
         tags = args.get("tags")
-        return self.cape_adapter.submit_file(file_path=file_path, tags=tags, timeout_sec=timeout)
+        async_mode = bool(args.get("async_mode", False))
+        poll_completion = not async_mode
+
+        return self.cape_adapter.submit_file(
+            file_path=file_path,
+            tags=tags,
+            timeout_sec=timeout,
+            poll_completion=poll_completion,
+        )
 
     # -----------------------------------------------------------------------
     # Specifications & Metadata (9 Tools, 6 Resources, 6 Prompts)
@@ -568,7 +591,7 @@ class BlueTeamMCPServer:
         return [
             {
                 "name": "mcp_scan_vulnerabilities",
-                "description": "Performs SAST security scan using Pure-Python AST Engine (CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295), Delta Git scanning, CVSS v3.1 scoring, and optional Semgrep CLI adapter.",
+                "description": "Performs SAST security scan using Pure-Python AST Engine (CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295, CWE-22, CWE-327, CWE-328, CWE-377, CWE-352), Delta Git scanning, CVSS scoring (v3.1 & v4.0), and OASIS SARIF v2.1.0 export.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -577,6 +600,12 @@ class BlueTeamMCPServer:
                         "delta_only": {"type": "boolean", "description": "If true, scans only modified lines from git diff."},
                         "base_commit": {"type": "string", "description": "Base Git commit for diff comparison (default: 'HEAD')."},
                         "use_semgrep": {"type": "boolean", "description": "If true, enables Semgrep multi-language adapter."},
+                        "output_format": {
+                            "type": "string",
+                            "enum": ["json", "sarif"],
+                            "description": "Output report format: 'json' (default) or 'sarif' (OASIS SARIF v2.1.0 standard).",
+                            "default": "json",
+                        },
                     },
                 },
             },
@@ -715,7 +744,7 @@ class BlueTeamMCPServer:
             },
             {
                 "name": "mcp_submit_dynamic_sandbox",
-                "description": "Submits a suspicious binary to an external isolated dynamic analysis sandbox (CAPEv2 / Cuckoo REST API) to monitor runtime execution, network C2 beacons, and dropped files. Returns graceful fallback when external sandbox is not configured.",
+                "description": "Submits a suspicious binary to an external isolated dynamic analysis sandbox (CAPEv2 / Cuckoo REST API) or polls task status non-blockingly via async_mode and check_status_task_id.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -731,8 +760,20 @@ class BlueTeamMCPServer:
                             "type": "string",
                             "description": "Optional sandbox routing tags (e.g. 'win10', 'x64', 'office').",
                         },
+                        "async_mode": {
+                            "type": "boolean",
+                            "description": "If true, submits file and returns task_id immediately without blocking for 120s.",
+                            "default": False,
+                        },
+                        "task_id": {
+                            "type": "integer",
+                            "description": "Poll status or retrieve report for a previously submitted task ID without re-submitting.",
+                        },
+                        "check_status_task_id": {
+                            "type": "integer",
+                            "description": "Legacy alias for task_id.",
+                        },
                     },
-                    "required": ["file_path"],
                 },
             },
         ]

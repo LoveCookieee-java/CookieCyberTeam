@@ -82,6 +82,7 @@ class CapeSandboxAdapter:
         tags: Optional[str] = None,
         timeout_sec: int = 120,
         poll_interval: float = 2.0,
+        poll_completion: bool = True,
     ) -> Dict[str, Any]:
         """
         Submit a binary artifact to the dynamic sandbox and await analysis report.
@@ -91,6 +92,8 @@ class CapeSandboxAdapter:
             tags: Optional environment tags (e.g. 'win10', 'x64', 'office').
             timeout_sec: Maximum time to wait for sandbox execution (default: 120s).
             poll_interval: Seconds between status polling requests (default: 2.0s).
+            poll_completion: If True, blocks until report is ready or timeout occurs.
+                             If False, returns immediately with task_id for non-blocking polling.
 
         Returns:
             Structured dictionary with analysis findings or graceful fallback guidance.
@@ -135,6 +138,17 @@ class CapeSandboxAdapter:
 
         task_id = sub_res["task_id"]
 
+        # Non-blocking async submission: return immediately
+        if not poll_completion:
+            return {
+                "success": True,
+                "task_id": task_id,
+                "status": "pending",
+                "target_file": str(target),
+                "poll_completion": False,
+                "message": f"Task {task_id} submitted successfully to dynamic sandbox. Use check_task_status(task_id={task_id}) to poll progress.",
+            }
+
         # Poll status until finished or timeout
         start_time = time.time()
         while time.time() - start_time < timeout_sec:
@@ -163,6 +177,58 @@ class CapeSandboxAdapter:
             "status": "timeout",
             "error": f"Dynamic sandbox analysis timed out after {timeout_sec} seconds (task {task_id}).",
             "target_file": str(target),
+        }
+
+    def check_task_status(
+        self,
+        task_id: int | str,
+        target_file: Optional[str | Path] = None,
+    ) -> Dict[str, Any]:
+        """
+        Check the status of an active or completed dynamic sandbox task non-blockingly.
+        If analysis is finished ('reported', 'completed', 'success'), retrieves the full behavioral report.
+        """
+        if not self.is_configured():
+            return {
+                "success": False,
+                "configured": False,
+                "error": "External dynamic analysis sandbox is not configured.",
+                "advisory": (
+                    "To enable dynamic detonation, set CAPE_API_URL and CAPE_API_KEY environment variables."
+                ),
+                "task_id": task_id,
+            }
+
+        status_res = self._poll_task_status(task_id)
+        if not status_res.get("success"):
+            return status_res
+
+        status_str = status_res.get("status", "pending").lower()
+        target_path = Path(target_file).resolve() if target_file else Path(f"task_{task_id}.bin")
+
+        if status_str in ("reported", "completed", "success"):
+            report = self._fetch_report(task_id, target_path)
+            if not report.get("success"):
+                return report
+            report["status"] = status_str
+            report["completed"] = True
+            return report
+        elif status_str in ("failed", "failure"):
+            return {
+                "success": False,
+                "task_id": task_id,
+                "status": "failed",
+                "error": f"Sandbox task {task_id} failed during detonation.",
+                "target_file": str(target_path),
+            }
+
+        return {
+            "success": True,
+            "task_id": task_id,
+            "status": status_str,
+            "completed": False,
+            "message": f"Sandbox task {task_id} is currently '{status_str}'.",
+            "target_file": str(target_path),
         }
 
     def _submit_task(self, target: Path, tags: Optional[str] = None) -> Dict[str, Any]:

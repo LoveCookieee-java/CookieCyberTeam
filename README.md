@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://github.com/LoveCookieee-java/CookieCyberTeam"><img src="https://img.shields.io/badge/Release-v1.3.0-blue.svg?style=flat-square" alt="Release"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="#verification--testing"><img src="https://img.shields.io/badge/Tests-123%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
+  <a href="#verification--testing"><img src="https://img.shields.io/badge/Tests-173%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
   <a href="#safety-invariants--policies"><img src="https://img.shields.io/badge/Safety-Air--Gapped%20Zero--Execution-red.svg?style=flat-square" alt="Safety"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License"></a>
@@ -348,7 +348,7 @@ Add BlueTeamAgent to your client configuration (e.g. `claude_desktop_config.json
 
 ## Verification & Testing
 
-The test suite contains **123 automated unit tests** verifying all scanners, calculators, sandboxes, guardrails, and adapters with a 100% pass rate.
+The test suite contains **173 automated unit tests** verifying all scanners, calculators, sandboxes, guardrails, and adapters with a 100% pass rate.
 
 ```bash
 # Run server diagnostic self-test
@@ -374,7 +374,7 @@ python server.py --stdio
 [PASS] Diagnostic Tool runner verified: Whitelist enforcement operational
 [PASS] Dynamic Sandbox tool verified: Graceful fallback operational
 ----------------------------------------------------------------------
-Ran 123 tests in 2.603s
+Ran 173 tests in 3.154s
 OK (100% Passed, 0 Failures, 0 Errors)
 ```
 

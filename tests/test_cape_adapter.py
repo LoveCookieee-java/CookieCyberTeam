@@ -264,6 +264,75 @@ class TestCapeSandboxAdapter(unittest.TestCase):
         self.assertFalse(adapter_insecure.verify_ssl)
         self.assertIsNotNone(adapter_insecure._ssl_context)
 
+    def test_nonblocking_submission_and_check_task_status(self):
+        """Verify non-blocking submission (poll_completion=False) and asynchronous status polling."""
+        current_status = ["running"]
+
+        def mock_transport(req: urllib.request.Request):
+            url = req.full_url
+            if "/api/v2/tasks/create/file/" in url:
+                return MockHTTPResponse({"task_id": 303})
+            elif "/api/v2/tasks/view/303/" in url:
+                return MockHTTPResponse({"data": {"status": current_status[0]}})
+            elif "/api/v2/tasks/get/report/303/" in url:
+                return MockHTTPResponse({
+                    "malscore": 9.1,
+                    "network": {"hosts": ["10.0.0.1"], "domains": [], "http": [], "dns": []},
+                    "behavior": {"summary": {}},
+                    "dropped": [],
+                    "signatures": [{"name": "c2_beacon", "severity": 3}],
+                })
+            raise ValueError(url)
+
+        adapter = CapeSandboxAdapter(api_url="https://cape.local", transport=mock_transport)
+
+        # 1. Non-blocking submission returns immediately
+        sub_res = adapter.submit_file(self.test_file, poll_completion=False)
+        self.assertTrue(sub_res["success"])
+        self.assertEqual(sub_res["task_id"], 303)
+        self.assertFalse(sub_res["poll_completion"])
+        self.assertEqual(sub_res["status"], "pending")
+
+        # 2. Check running status
+        status_res = adapter.check_task_status(303)
+        self.assertTrue(status_res["success"])
+        self.assertEqual(status_res["status"], "running")
+        self.assertFalse(status_res.get("completed", True))
+
+        # 3. Transition to reported and check status retrieves report
+        current_status[0] = "reported"
+        report_res = adapter.check_task_status(303)
+        self.assertTrue(report_res["success"])
+        self.assertEqual(report_res["status"], "reported")
+        self.assertEqual(report_res["malscore"], 9.1)
+        self.assertEqual(len(report_res["signatures"]), 1)
+
+    def test_check_task_status_unconfigured(self):
+        """Verify check_task_status handles unconfigured sandbox gracefully."""
+        adapter = CapeSandboxAdapter(api_url="")
+        res = adapter.check_task_status(999)
+        self.assertFalse(res["success"])
+        self.assertFalse(res["configured"])
+        self.assertIn("CAPE_API_URL", res["advisory"])
+
+
+    def test_check_task_status_report_fetch_failure(self):
+        """When task is reported but fetching report fails, check_task_status returns error without completed=True."""
+        def mock_transport(req: urllib.request.Request):
+            url = req.full_url
+            if "/api/v2/tasks/view/606/" in url:
+                return MockHTTPResponse({"data": {"status": "reported"}})
+            elif "/api/v2/tasks/get/report/606/" in url:
+                raise urllib.error.HTTPError(url, 500, "Internal Server Error", {}, io.BytesIO(b"Report generation crash"))
+            raise ValueError(url)
+
+        adapter = CapeSandboxAdapter(api_url="https://cape.local", transport=mock_transport)
+        res = adapter.check_task_status(606)
+        self.assertFalse(res["success"])
+        self.assertFalse(res.get("completed", False))
+        self.assertIn("Failed to retrieve report", res["error"])
+
 
 if __name__ == "__main__":
     unittest.main()
+

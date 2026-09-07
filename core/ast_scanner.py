@@ -87,8 +87,58 @@ class ASTScannerVisitor(ast.NodeVisitor):
         # e.g. "my_os" -> "os", "sys_exec" -> "os.system"
         self.aliases: Dict[str, str] = {}
 
-        # Local taint table: variable_name -> taint_type ("sql", "untrusted")
-        self.tainted_vars: Dict[str, str] = {}
+        # Lexical scope stack: each scope maps variable_name -> taint_type ("sql", "path", etc.) or None (cleared)
+        # Innermost scope is scope_stack[-1], module level is scope_stack[0]
+        self.scope_stack: List[Dict[str, Optional[str]]] = [{}]
+        self.global_vars_stack: List[Set[str]] = [set()]
+        self.nonlocal_vars_stack: List[Set[str]] = [set()]
+
+    @property
+    def tainted_vars(self) -> Dict[str, str]:
+        """Flattened active taint mapping for backward compatibility."""
+        merged: Dict[str, str] = {}
+        for scope in self.scope_stack:
+            for k, v in scope.items():
+                if v:
+                    merged[k] = v
+                else:
+                    merged.pop(k, None)
+        return merged
+
+    @tainted_vars.setter
+    def tainted_vars(self, values: Dict[str, str]) -> None:
+        self.scope_stack[-1] = dict(values)
+
+    def _get_var_taint_type(self, var_name: str) -> Optional[str]:
+        """Resolve identifier taint from innermost scope to outermost (module scope)."""
+        for scope in reversed(self.scope_stack):
+            if var_name in scope:
+                return scope[var_name]
+        return None
+
+    def _is_var_tainted(self, var_name: str, taint_type: Optional[str] = None) -> bool:
+        """Check whether a variable is tainted, optionally filtering by taint type."""
+        tt = self._get_var_taint_type(var_name)
+        if not tt:
+            return False
+        return taint_type is None or tt == taint_type
+
+    def _set_var_taint(self, var_name: str, taint_type: Optional[str]) -> None:
+        """Assign taint state taking global and nonlocal scope bindings into account."""
+        if var_name in self.global_vars_stack[-1]:
+            self.scope_stack[0][var_name] = taint_type
+            return
+
+        if var_name in self.nonlocal_vars_stack[-1]:
+            for scope in reversed(self.scope_stack[1:-1]):
+                if var_name in scope:
+                    scope[var_name] = taint_type
+                    return
+            if len(self.scope_stack) > 1:
+                self.scope_stack[-2][var_name] = taint_type
+                return
+
+        self.scope_stack[-1][var_name] = taint_type
 
     def _get_code_snippet(self, lineno: int) -> str:
         if 1 <= lineno <= len(self.source_lines):
@@ -121,7 +171,133 @@ class ASTScannerVisitor(ast.NodeVisitor):
             self.aliases[target_name] = full_name
         self.generic_visit(node)
 
+    def visit_Global(self, node: ast.Global) -> None:
+        self.global_vars_stack[-1].update(node.names)
+        self.generic_visit(node)
+
+    def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+        self.nonlocal_vars_stack[-1].update(node.names)
+        self.generic_visit(node)
+
+    def _collect_scope_declarations(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> Tuple[Set[str], Set[str]]:
+        globals_found: Set[str] = set()
+        nonlocals_found: Set[str] = set()
+        stack: List[ast.AST] = list(node.body)
+        while stack:
+            stmt = stack.pop()
+            if isinstance(stmt, ast.Global):
+                globals_found.update(stmt.names)
+            elif isinstance(stmt, ast.Nonlocal):
+                nonlocals_found.update(stmt.names)
+            elif isinstance(stmt, (ast.If, ast.While, ast.For, ast.With, ast.Try)):
+                for field_name in ("body", "orelse", "finalbody"):
+                    stack.extend(getattr(stmt, field_name, []))
+                if isinstance(stmt, ast.Try):
+                    for h in stmt.handlers:
+                        stack.extend(h.body)
+        return globals_found, nonlocals_found
+
+    def _push_function_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        self._check_csrf_exempt(node)
+        globals_in_body, nonlocals_in_body = self._collect_scope_declarations(node)
+        fn_scope: Dict[str, Optional[str]] = {}
+        # Register parameters in lexical scope to allow clean nonlocal resolution
+        for arg in getattr(node.args, "posonlyargs", []) + node.args.args + getattr(node.args, "kwonlyargs", []):
+            fn_scope[arg.arg] = None
+        if node.args.vararg:
+            fn_scope[node.args.vararg.arg] = None
+        if node.args.kwarg:
+            fn_scope[node.args.kwarg.arg] = None
+
+        self.scope_stack.append(fn_scope)
+        self.global_vars_stack.append(globals_in_body)
+        self.nonlocal_vars_stack.append(nonlocals_in_body)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._push_function_scope(node)
+        try:
+            self.generic_visit(node)
+        finally:
+            self.scope_stack.pop()
+            self.global_vars_stack.pop()
+            self.nonlocal_vars_stack.pop()
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._push_function_scope(node)
+        try:
+            self.generic_visit(node)
+        finally:
+            self.scope_stack.pop()
+            self.global_vars_stack.pop()
+            self.nonlocal_vars_stack.pop()
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        self.scope_stack.append({})
+        self.global_vars_stack.append(set())
+        self.nonlocal_vars_stack.append(set())
+        try:
+            self.generic_visit(node)
+        finally:
+            self.scope_stack.pop()
+            self.global_vars_stack.pop()
+            self.nonlocal_vars_stack.pop()
+
+    def _check_csrf_exempt(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        """Detect route handlers using @csrf_exempt or @csrf.exempt (CWE-352)."""
+        for dec in node.decorator_list:
+            is_exempt = False
+            dec_unparsed = ""
+            try:
+                dec_unparsed = ast.unparse(dec).lower()
+            except Exception:
+                pass
+
+            if "csrf_exempt" in dec_unparsed or "csrf.exempt" in dec_unparsed or "csrf_protect.exempt" in dec_unparsed:
+                is_exempt = True
+            elif isinstance(dec, ast.Name) and dec.id == "csrf_exempt":
+                is_exempt = True
+            elif isinstance(dec, ast.Attribute) and (
+                dec.attr == "csrf_exempt" or (dec.attr == "exempt" and "csrf" in dec_unparsed)
+            ):
+                is_exempt = True
+            elif isinstance(dec, ast.Call):
+                func = dec.func
+                if isinstance(func, ast.Name) and func.id == "csrf_exempt":
+                    is_exempt = True
+                elif isinstance(func, ast.Attribute) and (
+                    func.attr == "csrf_exempt" or (func.attr == "exempt" and "csrf" in dec_unparsed)
+                ):
+                    is_exempt = True
+
+            if is_exempt:
+                cvss = cvss_for_cwe("CWE-352")
+                self.findings.append(Finding(
+                    cwe_id="CWE-352",
+                    title="Cross-Site Request Forgery (CSRF) Protection Disabled",
+                    description=f"Route handler function '{node.name}' uses anti-CSRF exempt decorator ('{dec_unparsed or 'csrf_exempt'}'), disabling anti-CSRF token enforcement.",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    severity=cvss["severity"],
+                    cvss_score=cvss["base_score"],
+                    cvss_vector=cvss["vector_string"],
+                    code_snippet=self._get_code_snippet(node.lineno),
+                    remediation="Remove '@csrf_exempt' decorator and enforce CSRF tokens on state-changing POST/PUT/DELETE requests.",
+                ))
+
     def _check_assign_target_and_value(self, target: ast.AST, value: Optional[ast.AST], lineno: int) -> None:
+        if isinstance(target, ast.Starred):
+            self._check_assign_target_and_value(target.value, value, lineno)
+            return
+
+        if isinstance(target, (ast.Tuple, ast.List)):
+            if value and isinstance(value, (ast.Tuple, ast.List)) and len(target.elts) == len(value.elts):
+                for t, v in zip(target.elts, value.elts):
+                    self._check_assign_target_and_value(t, v, lineno)
+            else:
+                for t in target.elts:
+                    self._check_assign_target_and_value(t, value, lineno)
+            return
+
         if isinstance(target, ast.Name):
             var_name = target.id.lower()
             if value and isinstance(value, ast.Constant) and isinstance(value.value, str):
@@ -147,18 +323,24 @@ class ASTScannerVisitor(ast.NodeVisitor):
                         remediation="Store secrets in environment variables or a secure key management vault.",
                     ))
 
-            # Track local taint for SQL queries with alias preservation & clearing
+            # Track local taint for SQL queries and path manipulations
             if value and self._is_potential_sql_expr(value):
-                self.tainted_vars[target.id] = "sql"
-            elif value and self._references_tainted_var(value):
-                self.tainted_vars[target.id] = "sql"
+                self._set_var_taint(target.id, "sql")
+            elif value and self._references_tainted_var(value, taint_type="sql"):
+                self._set_var_taint(target.id, "sql")
+            elif value and self._is_potential_path_expr(value):
+                self._set_var_taint(target.id, "path")
+            elif value and self._is_path_like_node(value):
+                self._set_var_taint(target.id, "path")
+            elif value and self._references_tainted_var(value, taint_type="path"):
+                self._set_var_taint(target.id, "path")
             else:
-                self.tainted_vars.pop(target.id, None)
+                self._set_var_taint(target.id, None)
 
-    def _references_tainted_var(self, node: ast.AST) -> bool:
+    def _references_tainted_var(self, node: ast.AST, taint_type: Optional[str] = None) -> bool:
         """Check if an AST expression references any currently tainted variable."""
         for sub in ast.walk(node):
-            if isinstance(sub, ast.Name) and sub.id in self.tainted_vars:
+            if isinstance(sub, ast.Name) and self._is_var_tainted(sub.id, taint_type=taint_type):
                 return True
         return False
 
@@ -179,11 +361,69 @@ class ASTScannerVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
-        # Track augmented assignments (e.g. sql += user_input)
+        # Track augmented assignments (e.g. sql += user_input, path += user_input)
         if isinstance(node.target, ast.Name):
-            if self._is_potential_sql_expr(node.value) or node.target.id in self.tainted_vars:
-                self.tainted_vars[node.target.id] = "sql"
+            if (
+                self._is_potential_sql_expr(node.value)
+                or self._is_var_tainted(node.target.id, taint_type="sql")
+                or self._references_tainted_var(node.value, taint_type="sql")
+            ):
+                self._set_var_taint(node.target.id, "sql")
+            elif (
+                self._is_potential_path_expr(node.value)
+                or self._is_var_tainted(node.target.id, taint_type="path")
+                or self._references_tainted_var(node.value, taint_type="path")
+            ):
+                self._set_var_taint(node.target.id, "path")
         self.generic_visit(node)
+
+    def _is_path_like_node(self, node: ast.AST) -> bool:
+        """Check if an AST node represents a pathlib.Path object or path-tainted variable."""
+        if isinstance(node, ast.Call):
+            func_name = self._resolve_call_name(node.func)
+            if func_name in ("pathlib.Path", "Path") or func_name.endswith(".Path"):
+                return True
+        elif isinstance(node, ast.Name):
+            if self._is_var_tainted(node.id, taint_type="path"):
+                return True
+        elif isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            return self._is_path_like_node(node.left) or self._is_path_like_node(node.right)
+        elif self._references_tainted_var(node, taint_type="path"):
+            return True
+        return False
+
+    def _is_potential_path_expr(self, node: ast.AST) -> bool:
+        """Check if an expression constructs a dynamic file path."""
+        if isinstance(node, ast.NamedExpr):
+            return self._is_potential_path_expr(node.value)
+
+        if isinstance(node, ast.Call):
+            func_name = self._resolve_call_name(node.func)
+            if func_name in ("os.path.join", "posixpath.join", "ntpath.join"):
+                return any(not isinstance(a, ast.Constant) for a in node.args[1:])
+            if func_name in ("pathlib.Path", "Path") or func_name.endswith(".Path"):
+                return any(not isinstance(a, ast.Constant) for a in node.args)
+
+        if isinstance(node, ast.JoinedStr):
+            raw_text = "".join(
+                part.value for part in node.values
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            )
+            if ("/" in raw_text or "\\" in raw_text) and any(isinstance(p, ast.FormattedValue) for p in node.values):
+                return True
+
+        if isinstance(node, ast.BinOp):
+            if isinstance(node.op, ast.Add):
+                if not self._is_pure_static_constant_binop(node):
+                    raw_text = self._extract_string_literals(node)
+                    if "/" in raw_text or "\\" in raw_text:
+                        return True
+            elif isinstance(node.op, ast.Div):
+                # Pathlib '/' operator: only true if at least one operand is a Path object or path-tainted
+                if self._is_path_like_node(node.left) or self._is_path_like_node(node.right):
+                    return True
+
+        return False
 
     def _is_pure_static_constant_binop(self, node: ast.AST) -> bool:
         """Recursively check if a BinOp (Add) tree consists purely of Constant nodes."""
@@ -307,9 +547,9 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 if self._is_potential_sql_expr(unwrapped_arg):
                     is_sqli = True
                 # Tainted variable passed in execute()
-                elif isinstance(unwrapped_arg, ast.Name) and unwrapped_arg.id in self.tainted_vars:
+                elif isinstance(unwrapped_arg, ast.Name) and self._is_var_tainted(unwrapped_arg.id, taint_type="sql"):
                     is_sqli = True
-                elif self._references_tainted_var(unwrapped_arg):
+                elif self._references_tainted_var(unwrapped_arg, taint_type="sql"):
                     is_sqli = True
 
                 if is_sqli:
@@ -345,7 +585,7 @@ class ASTScannerVisitor(ast.NodeVisitor):
                     remediation="Avoid eval/exec. Use ast.literal_eval() for safe data deserialization or explicit mapping.",
                 ))
 
-        # 4. CWE-502: Insecure Deserialization
+        # 4. CWE-502: Insecure Deserialization (Pickle, YAML, AI/ML models)
         if func_name in ("pickle.loads", "pickle.load", "_pickle.loads", "_pickle.load", "shelve.open", "yaml.unsafe_load"):
             cvss = cvss_for_cwe("CWE-502")
             self.findings.append(Finding(
@@ -379,6 +619,81 @@ class ASTScannerVisitor(ast.NodeVisitor):
                     code_snippet=self._get_code_snippet(node.lineno),
                     remediation="Use yaml.safe_load() or yaml.load(..., Loader=yaml.SafeLoader).",
                 ))
+        elif func_name in ("torch.load",):
+            has_weights_only = False
+            weights_only_false = False
+            for kw in node.keywords:
+                if kw.arg == "weights_only":
+                    has_weights_only = True
+                    if isinstance(kw.value, ast.Constant) and bool(kw.value.value) is False:
+                        weights_only_false = True
+                    break
+            if not has_weights_only or weights_only_false:
+                cvss = cvss_for_cwe("CWE-502")
+                reason = "explicitly sets weights_only=False" if weights_only_false else "omits weights_only=True"
+                self.findings.append(Finding(
+                    cwe_id="CWE-502",
+                    title="Insecure AI/ML Model Deserialization via torch.load",
+                    description=f"Call to '{func_name}' {reason}, allowing arbitrary Python code execution via pickled weights.",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    severity=cvss["severity"],
+                    cvss_score=cvss["base_score"],
+                    cvss_vector=cvss["vector_string"],
+                    code_snippet=self._get_code_snippet(node.lineno),
+                    remediation="Always specify 'weights_only=True' in torch.load() or use Safetensors format.",
+                ))
+        elif func_name in ("joblib.load",):
+            cvss = cvss_for_cwe("CWE-502")
+            self.findings.append(Finding(
+                cwe_id="CWE-502",
+                title="Insecure AI/ML Model Deserialization via joblib.load",
+                description=f"Call to '{func_name}' deserializes untrusted pickle artifacts, allowing arbitrary code execution.",
+                file_path=self.file_path,
+                line_number=node.lineno,
+                severity=cvss["severity"],
+                cvss_score=cvss["base_score"],
+                cvss_vector=cvss["vector_string"],
+                code_snippet=self._get_code_snippet(node.lineno),
+                remediation="Use secure model representations such as ONNX, Safetensors, or PMML.",
+            ))
+        elif func_name in ("numpy.load", "np.load"):
+            allow_pickle = False
+            for kw in node.keywords:
+                if kw.arg == "allow_pickle" and isinstance(kw.value, ast.Constant) and bool(kw.value.value) is True:
+                    allow_pickle = True
+                    break
+            if not allow_pickle and len(node.args) >= 3:
+                if isinstance(node.args[2], ast.Constant) and bool(node.args[2].value) is True:
+                    allow_pickle = True
+            if allow_pickle:
+                cvss = cvss_for_cwe("CWE-502")
+                self.findings.append(Finding(
+                    cwe_id="CWE-502",
+                    title="Insecure Array Deserialization via numpy.load(allow_pickle=True)",
+                    description=f"Call to '{func_name}' explicitly enables 'allow_pickle=True', allowing arbitrary code execution.",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    severity=cvss["severity"],
+                    cvss_score=cvss["base_score"],
+                    cvss_vector=cvss["vector_string"],
+                    code_snippet=self._get_code_snippet(node.lineno),
+                    remediation="Avoid 'allow_pickle=True'. Save numeric arrays as pure binary .npy files without object arrays.",
+                ))
+        elif func_name in ("dill.loads", "dill.load", "cloudpickle.loads", "cloudpickle.load"):
+            cvss = cvss_for_cwe("CWE-502")
+            self.findings.append(Finding(
+                cwe_id="CWE-502",
+                title=f"Insecure Deserialization via {func_name}",
+                description=f"Call to '{func_name}' deserializes arbitrary Python bytecode, allowing remote code execution.",
+                file_path=self.file_path,
+                line_number=node.lineno,
+                severity=cvss["severity"],
+                cvss_score=cvss["base_score"],
+                cvss_vector=cvss["vector_string"],
+                code_snippet=self._get_code_snippet(node.lineno),
+                remediation="Never deserialize untrusted payloads with dill or cloudpickle. Use JSON or HMAC-authenticated payloads.",
+            ))
 
         # 5. CWE-295: Disabled SSL Verification
         if func_name in ("requests.get", "requests.post", "requests.put", "requests.delete", "requests.request",
@@ -412,6 +727,190 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 cvss_vector=cvss["vector_string"],
                 code_snippet=self._get_code_snippet(node.lineno),
                 remediation="Use ssl.create_default_context() with verified certificates.",
+            ))
+
+        # 6. CWE-22: Path Traversal / Zip Slip
+        if func_name.endswith(".extractall") or func_name == "extractall":
+            has_safe_filter = False
+            for kw in node.keywords:
+                if kw.arg in ("members", "filter"):
+                    if not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                        has_safe_filter = True
+                        break
+            if not has_safe_filter and len(node.args) >= 2:
+                if not (isinstance(node.args[1], ast.Constant) and node.args[1].value is None):
+                    has_safe_filter = True
+
+            if not has_safe_filter:
+                cvss = cvss_for_cwe("CWE-22")
+                self.findings.append(Finding(
+                    cwe_id="CWE-22",
+                    title="Arbitrary File Overwrite via Archive Extraction (Zip Slip)",
+                    description=f"Call to '{func_name}' without safe members filter allows path traversal / arbitrary file overwrite.",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    severity=cvss["severity"],
+                    cvss_score=cvss["base_score"],
+                    cvss_vector=cvss["vector_string"],
+                    code_snippet=self._get_code_snippet(node.lineno),
+                    remediation="Validate archive member paths before extracting or pass safe member filter to extractall().",
+                ))
+
+        if func_name in ("open", "io.open", "os.open"):
+            first_arg = node.args[0] if node.args else None
+            if not first_arg and node.keywords:
+                for kw in node.keywords:
+                    if kw.arg in ("file", "path"):
+                        first_arg = kw.value
+                        break
+            if first_arg is not None:
+                is_path_traversal = False
+                if self._is_potential_path_expr(first_arg):
+                    is_path_traversal = True
+                elif isinstance(first_arg, ast.JoinedStr) and any(isinstance(p, ast.FormattedValue) for p in first_arg.values):
+                    is_path_traversal = True
+                elif isinstance(first_arg, ast.BinOp) and isinstance(first_arg.op, ast.Add):
+                    if not self._is_pure_static_constant_binop(first_arg):
+                        is_path_traversal = True
+                elif isinstance(first_arg, ast.Name) and self._is_var_tainted(first_arg.id, taint_type="path"):
+                    is_path_traversal = True
+                elif self._references_tainted_var(first_arg, taint_type="path"):
+                    is_path_traversal = True
+
+                if is_path_traversal:
+                    cvss = cvss_for_cwe("CWE-22")
+                    self.findings.append(Finding(
+                        cwe_id="CWE-22",
+                        title="Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
+                        description=f"File open operation '{func_name}' called with dynamic or untrusted path expression.",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        severity=cvss["severity"],
+                        cvss_score=cvss["base_score"],
+                        cvss_vector=cvss["vector_string"],
+                        code_snippet=self._get_code_snippet(node.lineno),
+                        remediation="Validate paths using os.path.realpath() and os.path.commonpath() against an allowed base directory.",
+                    ))
+
+        # Pathlib file reads: Path(...).read_text(), read_bytes(), Path.open()
+        if (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("read_text", "read_bytes", "open")
+            and func_name not in ("open", "io.open", "os.open", "shelve.open", "tarfile.open")
+        ):
+            target_obj = node.func.value
+            is_pathlib_traversal = False
+            if self._is_potential_path_expr(target_obj):
+                is_pathlib_traversal = True
+            elif isinstance(target_obj, ast.Name) and self._is_var_tainted(target_obj.id, taint_type="path"):
+                is_pathlib_traversal = True
+            elif self._references_tainted_var(target_obj, taint_type="path"):
+                is_pathlib_traversal = True
+
+            if is_pathlib_traversal:
+                cvss = cvss_for_cwe("CWE-22")
+                self.findings.append(Finding(
+                    cwe_id="CWE-22",
+                    title="Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
+                    description=f"Pathlib file read operation '{node.func.attr}' called on dynamic or untrusted path expression.",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    severity=cvss["severity"],
+                    cvss_score=cvss["base_score"],
+                    cvss_vector=cvss["vector_string"],
+                    code_snippet=self._get_code_snippet(node.lineno),
+                    remediation="Validate paths using os.path.realpath() and os.path.commonpath() against an allowed base directory.",
+                ))
+
+        if func_name in ("os.path.join", "posixpath.join", "ntpath.join"):
+            if len(node.args) >= 2 and any(not isinstance(a, ast.Constant) for a in node.args[1:]):
+                cvss = cvss_for_cwe("CWE-22")
+                self.findings.append(Finding(
+                    cwe_id="CWE-22",
+                    title="Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
+                    description=f"Call to '{func_name}' with untrusted or dynamic subpath is vulnerable to path traversal.",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    severity=cvss["severity"],
+                    cvss_score=cvss["base_score"],
+                    cvss_vector=cvss["vector_string"],
+                    code_snippet=self._get_code_snippet(node.lineno),
+                    remediation="Validate resolved path using os.path.commonpath([base_dir, resolved_path]) == base_dir.",
+                ))
+
+        # 7. CWE-327 & CWE-328: Broken Cryptography
+        is_weak_hash = False
+        if func_name in ("hashlib.md5", "hashlib.sha1", "Crypto.Hash.MD5.new", "Crypto.Hash.SHA1.new"):
+            is_weak_hash = True
+        elif func_name == "hashlib.new":
+            if node.args and isinstance(node.args[0], ast.Constant) and str(node.args[0].value).lower() in ("md5", "sha1"):
+                is_weak_hash = True
+            else:
+                for kw in node.keywords:
+                    if kw.arg == "name" and isinstance(kw.value, ast.Constant) and str(kw.value.value).lower() in ("md5", "sha1"):
+                        is_weak_hash = True
+                        break
+
+        if is_weak_hash:
+            cvss = cvss_for_cwe("CWE-328")
+            self.findings.append(Finding(
+                cwe_id="CWE-328",
+                title="Use of Weak Hash Algorithm",
+                description=f"Cryptographically broken hash function '{func_name}' detected. Vulnerable to collision attacks.",
+                file_path=self.file_path,
+                line_number=node.lineno,
+                severity=cvss["severity"],
+                cvss_score=cvss["base_score"],
+                cvss_vector=cvss["vector_string"],
+                code_snippet=self._get_code_snippet(node.lineno),
+                remediation="Use secure collision-resistant hash functions like SHA-256 (hashlib.sha256()) or SHA-3.",
+            ))
+
+        is_weak_cipher = False
+        cipher_desc = ""
+        if func_name.endswith(".DES.new") or func_name in ("DES.new", "DES", "Crypto.Cipher.DES.new"):
+            is_weak_cipher = True
+            cipher_desc = "Legacy DES encryption algorithm has insufficient 56-bit key length and is vulnerable to brute force."
+        elif func_name.endswith(".AES.new") or func_name in ("AES.new", "Crypto.Cipher.AES.new"):
+            for kw in node.keywords:
+                if kw.arg == "mode" and "MODE_ECB" in ast.unparse(kw.value):
+                    is_weak_cipher = True
+                    cipher_desc = "AES with ECB (Electronic Codebook) mode leaks plaintext data patterns because identical blocks yield identical ciphertext."
+                    break
+            if not is_weak_cipher and len(node.args) >= 2:
+                if "MODE_ECB" in ast.unparse(node.args[1]):
+                    is_weak_cipher = True
+                    cipher_desc = "AES with ECB (Electronic Codebook) mode leaks plaintext data patterns because identical blocks yield identical ciphertext."
+
+        if is_weak_cipher:
+            cvss = cvss_for_cwe("CWE-327")
+            self.findings.append(Finding(
+                cwe_id="CWE-327",
+                title="Use of a Broken or Risky Cryptographic Algorithm",
+                description=cipher_desc,
+                file_path=self.file_path,
+                line_number=node.lineno,
+                severity=cvss["severity"],
+                cvss_score=cvss["base_score"],
+                cvss_vector=cvss["vector_string"],
+                code_snippet=self._get_code_snippet(node.lineno),
+                remediation="Use AES with authenticated encryption modes like GCM (AES.MODE_GCM) or ChaCha20-Poly1305.",
+            ))
+
+        # 8. CWE-377: Insecure Temporary File Creation
+        if func_name in ("tempfile.mktemp", "mktemp"):
+            cvss = cvss_for_cwe("CWE-377")
+            self.findings.append(Finding(
+                cwe_id="CWE-377",
+                title="Insecure Temporary File Creation (mktemp)",
+                description=f"Call to '{func_name}' is deprecated and insecure. Vulnerable to race conditions (TOCTOU) and symlink attacks.",
+                file_path=self.file_path,
+                line_number=node.lineno,
+                severity=cvss["severity"],
+                cvss_score=cvss["base_score"],
+                cvss_vector=cvss["vector_string"],
+                code_snippet=self._get_code_snippet(node.lineno),
+                remediation="Use tempfile.NamedTemporaryFile() or tempfile.mkstemp() which create files atomically.",
             ))
 
         self.generic_visit(node)
@@ -530,3 +1029,111 @@ class ASTScanner:
                 for i in range(start, start + count):
                     lines.add(i)
         return lines
+
+    def to_sarif(
+        self,
+        findings: List[Finding | Dict[str, Any]],
+        tool_version: str = "1.3.0",
+    ) -> Dict[str, Any]:
+        """Convert findings into OASIS SARIF v2.1.0 JSON representation."""
+        return findings_to_sarif(findings, tool_version=tool_version)
+
+
+def findings_to_sarif(
+    findings: List[Finding | Dict[str, Any]],
+    tool_version: str = "1.3.0",
+) -> Dict[str, Any]:
+    """
+    Export list of SAST findings into standard OASIS SARIF v2.1.0 schema format.
+    Compatible with GitHub Code Scanning, DefectDojo, and modern CI/CD dashboards.
+    """
+    rules_map: Dict[str, Dict[str, Any]] = {}
+    results: List[Dict[str, Any]] = []
+
+    sev_level_map = {
+        "Critical": "error",
+        "High": "error",
+        "Medium": "warning",
+        "Low": "note",
+        "None": "note",
+    }
+
+    for f in findings:
+        f_dict = f.to_dict() if hasattr(f, "to_dict") else dict(f)
+        cwe_id = f_dict.get("cwe_id", "UNKNOWN")
+        title = f_dict.get("title", cwe_id)
+        description = f_dict.get("description", "")
+        file_path = f_dict.get("file_path") or "<unknown>"
+        line_no_raw = f_dict.get("line_number")
+        line_no = int(line_no_raw) if line_no_raw is not None else 1
+        severity = f_dict.get("severity", "Low")
+        level = sev_level_map.get(severity, "warning")
+        snippet = f_dict.get("code_snippet", "")
+        remediation = f_dict.get("remediation", "")
+
+        rule_name = re.sub(r"[^A-Za-z0-9_]", "", title.title()) or cwe_id
+        if cwe_id not in rules_map:
+            rules_map[cwe_id] = {
+                "id": cwe_id,
+                "name": rule_name,
+                "shortDescription": {"text": title},
+                "fullDescription": {"text": description or title},
+                "defaultConfiguration": {"level": level},
+                "help": {"text": remediation or description},
+                "properties": {
+                    "tags": ["security", cwe_id],
+                    "precision": "high",
+                },
+            }
+
+        rule_index = list(rules_map.keys()).index(cwe_id)
+
+        # Normalize file path URI to posix format
+        posix_path = Path(file_path).as_posix() if hasattr(Path(file_path), "as_posix") else str(file_path).replace("\\", "/")
+
+        result_item: Dict[str, Any] = {
+            "ruleId": cwe_id,
+            "ruleIndex": rule_index,
+            "level": level,
+            "message": {
+                "text": f"{title}: {description}" if description else title,
+            },
+            "locations": [
+                {
+                    "physicalLocation": {
+                        "artifactLocation": {
+                            "uri": posix_path,
+                        },
+                        "region": {
+                            "startLine": max(1, line_no),
+                            "snippet": {
+                                "text": snippet,
+                            },
+                        },
+                    }
+                }
+            ],
+            "properties": {
+                "cvss_score": f_dict.get("cvss_score", 0.0),
+                "cvss_vector": f_dict.get("cvss_vector", ""),
+                "remediation": remediation,
+            },
+        }
+        results.append(result_item)
+
+    return {
+        "$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [
+            {
+                "tool": {
+                    "driver": {
+                        "name": "BlueTeam-AST-Scanner",
+                        "semanticVersion": tool_version,
+                        "rules": list(rules_map.values()),
+                    }
+                },
+                "results": results,
+            }
+        ],
+    }

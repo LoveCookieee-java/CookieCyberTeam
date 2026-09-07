@@ -85,6 +85,94 @@ class TestCVSSCalculator(unittest.TestCase):
         res = calculate_cvss_score(vec)
         self.assertEqual(res["base_score"], 9.8)
 
+    def test_cvss_v40_max_critical_vector(self):
+        """Test CVSS v4.0 maximum critical vector (10.0 Critical, EQ [0,0,0,0])."""
+        vec = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:H/SI:H/SA:H"
+        res = calculate_cvss_score(vec)
+        self.assertEqual(res["version"], "4.0")
+        self.assertEqual(res["base_score"], 10.0)
+        self.assertEqual(res["severity"], "Critical")
+        self.assertEqual(res["macro_vector"], "[0,0,0,0]")
+        self.assertEqual(res["eq"]["EQ1"], 0)
+        self.assertEqual(res["eq"]["EQ2"], 0)
+
+    def test_cvss_v40_unauthenticated_rce_vector(self):
+        """Test CVSS v4.0 network RCE vector with scope unchanged/subsequent none (9.3 Critical)."""
+        vec = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"
+        res = calculate_cvss_score(vec)
+        self.assertEqual(res["version"], "4.0")
+        self.assertEqual(res["base_score"], 9.3)
+        self.assertEqual(res["severity"], "Critical")
+        self.assertEqual(res["macro_vector"], "[0,0,0,2]")
+
+    def test_cvss_v40_zero_impact_vector(self):
+        """Test CVSS v4.0 vector with zero impact returns 0.0 None."""
+        vec = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:N/SC:N/SI:N/SA:N"
+        res = calculate_cvss_score(vec)
+        self.assertEqual(res["base_score"], 0.0)
+        self.assertEqual(res["severity"], "None")
+
+    def test_cvss_v40_validation_errors(self):
+        """Verify CVSS v4.0 raises ValueError on missing metrics or invalid values."""
+        # Missing AT and subsequent metrics
+        with self.assertRaises(ValueError):
+            parse_vector_string("CVSS:4.0/AV:N/AC:L/PR:N/UI:N/VC:H/VI:H/VA:H")
+        # Invalid UI value (X not in N, P, A)
+        with self.assertRaises(ValueError):
+            parse_vector_string("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:X/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N")
+
+    def test_new_cwe_default_vectors(self):
+        """Verify default CVSS vectors for CWE-22, CWE-327, CWE-328, CWE-377, CWE-352."""
+        r_cwe22 = cvss_for_cwe("CWE-22")
+        self.assertEqual(r_cwe22["base_score"], 9.1)
+        self.assertEqual(r_cwe22["severity"], "Critical")
+
+        r_cwe327 = cvss_for_cwe("CWE-327")
+        self.assertEqual(r_cwe327["base_score"], 7.5)
+        self.assertEqual(r_cwe327["severity"], "High")
+
+        r_cwe328 = cvss_for_cwe("CWE-328")
+        self.assertEqual(r_cwe328["base_score"], 7.5)
+
+        r_cwe377 = cvss_for_cwe("CWE-377")
+        self.assertEqual(r_cwe377["base_score"], 4.0)
+        self.assertEqual(r_cwe377["severity"], "Medium")
+
+        r_cwe352 = cvss_for_cwe("CWE-352")
+        self.assertEqual(r_cwe352["base_score"], 6.5)
+        self.assertEqual(r_cwe352["severity"], "Medium")
+
+        # Test CVSS v4.0 mode for CWE-78
+        r_cwe78_v4 = cvss_for_cwe("CWE-78", version="4.0")
+        self.assertEqual(r_cwe78_v4["version"], "4.0")
+        self.assertEqual(r_cwe78_v4["base_score"], 9.3)
+
+
+    def test_vector_whitespace_resilience(self):
+        """Verify vector parser tolerates spaces around metrics and colons."""
+        vec = " CVSS:3.1 / AV : N / AC : L / PR : N / UI : N / S : U / C : H / I : H / A : H "
+        res = calculate_cvss_score(vec)
+        self.assertEqual(res["base_score"], 9.8)
+
+        vec_v4 = " CVSS:4.0 / AV : N / AC : L / AT : N / PR : N / UI : N / VC : H / VI : H / VA : H / SC : N / SI : N / SA : N "
+        res_v4 = calculate_cvss_score(vec_v4)
+        self.assertEqual(res_v4["base_score"], 9.3)
+
+    def test_cvss_for_cwe_v4_custom_overrides(self):
+        """Verify cvss_for_cwe with version='4.0' and custom overrides."""
+        res = cvss_for_cwe("CWE-78", custom_overrides={"PR": "H"}, version="4.0")
+        self.assertEqual(res["version"], "4.0")
+        self.assertEqual(res["metrics"]["PR"], "H")
+        self.assertLess(res["base_score"], 9.3)
+
+
+    def test_cvss_for_cwe_version_string_variants(self):
+        """Verify cvss_for_cwe accepts '4', 'v4', and 'v4.0' as valid CVSS v4.0 selectors."""
+        for v in ("4", "v4", "v4.0", "4.0"):
+            res = cvss_for_cwe("CWE-78", version=v)
+            self.assertEqual(res["version"], "4.0", f"Failed for version='{v}'")
+            self.assertEqual(res["base_score"], 9.3)
+
 
 if __name__ == "__main__":
     unittest.main()

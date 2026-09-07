@@ -635,6 +635,139 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("Zero-Execution Policy", soc_txt)
         self.assertIn("File Safety Invariant", soc_txt)
 
+    def test_tool_scan_vulnerabilities_sarif_output(self):
+        """Verify mcp_scan_vulnerabilities returns OASIS SARIF v2.1.0 format when requested."""
+        code = "import os\ndef run(cmd): os.system(cmd)\n"
+        req = {
+            "jsonrpc": "2.0",
+            "id": 201,
+            "method": "tools/call",
+            "params": {
+                "name": "mcp_scan_vulnerabilities",
+                "arguments": {"code_content": code, "output_format": "sarif"},
+            },
+        }
+        resp = self.server.handle_request(req)
+        self.assertNotIn("error", resp)
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["output_format"], "sarif")
+        self.assertIn("sarif", payload)
+        sarif = payload["sarif"]
+        self.assertEqual(sarif["version"], "2.1.0")
+        self.assertEqual(sarif["runs"][0]["tool"]["driver"]["name"], "BlueTeam-AST-Scanner")
+        self.assertEqual(len(sarif["runs"][0]["results"]), 1)
+        self.assertEqual(sarif["runs"][0]["results"][0]["ruleId"], "CWE-78")
+
+    def test_tool_submit_dynamic_sandbox_async_and_check_status(self):
+        """Verify mcp_submit_dynamic_sandbox supports async_mode and check_status_task_id parameters."""
+        # 1. Unconfigured async mode returns guidance with configured=False
+        res_async = self.server.handle_call_tool(
+            "mcp_submit_dynamic_sandbox",
+            {"file_path": "dummy.exe", "async_mode": True},
+        )
+        self.assertFalse(res_async["success"])
+        self.assertFalse(res_async["configured"])
+
+        # 2. Check status by task_id without file_path (primary parameter)
+        res_task_id = self.server.handle_call_tool(
+            "mcp_submit_dynamic_sandbox",
+            {"task_id": 505},
+        )
+        self.assertFalse(res_task_id["success"])
+        self.assertFalse(res_task_id["configured"])
+        self.assertEqual(res_task_id["task_id"], 505)
+
+        # 3. Check status by check_status_task_id (legacy alias)
+        res_status = self.server.handle_call_tool(
+            "mcp_submit_dynamic_sandbox",
+            {"check_status_task_id": 404},
+        )
+        self.assertFalse(res_status["success"])
+        self.assertFalse(res_status["configured"])
+        self.assertEqual(res_status["task_id"], 404)
+
+        # 4. JSON-RPC tools/call dispatch using task_id
+        rpc_req = {
+            "jsonrpc": "2.0",
+            "id": 202,
+            "method": "tools/call",
+            "params": {
+                "name": "mcp_submit_dynamic_sandbox",
+                "arguments": {"task_id": 707},
+            },
+        }
+        rpc_resp = self.server.handle_request(rpc_req)
+        self.assertNotIn("error", rpc_resp)
+        rpc_payload = json.loads(rpc_resp["result"]["content"][0]["text"])
+        self.assertFalse(rpc_payload["success"])
+        self.assertEqual(rpc_payload["task_id"], 707)
+
+    def test_tool_submit_dynamic_sandbox_configured_happy_path(self):
+        """Verify mcp_submit_dynamic_sandbox happy path with mock configured adapter."""
+        class MockResp:
+            def __init__(self, data):
+                self._raw = json.dumps(data).encode("utf-8")
+            def read(self):
+                return self._raw
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+
+        def mock_transport(req):
+            url = req.full_url
+            if "/api/v2/tasks/create/file/" in url:
+                return MockResp({"task_id": 808})
+            elif "/api/v2/tasks/view/808/" in url:
+                return MockResp({"data": {"status": "running"}})
+            raise ValueError(url)
+
+        from core.cape_adapter import CapeSandboxAdapter
+        with tempfile.TemporaryDirectory() as td:
+            test_file = Path(td) / "test_artifact.bin"
+            test_file.write_bytes(b"MZ\x90\x00data")
+
+            configured_adapter = CapeSandboxAdapter(
+                api_url="https://cape.test.local",
+                api_key="valid_token",
+                transport=mock_transport,
+            )
+            self.server.cape_adapter = configured_adapter
+
+            # 1. Async submit via JSON-RPC
+            submit_req = {
+                "jsonrpc": "2.0",
+                "id": 301,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_submit_dynamic_sandbox",
+                    "arguments": {"file_path": str(test_file), "async_mode": True},
+                },
+            }
+            submit_resp = self.server.handle_request(submit_req)
+            self.assertNotIn("error", submit_resp)
+            submit_payload = json.loads(submit_resp["result"]["content"][0]["text"])
+            self.assertTrue(submit_payload["success"])
+            self.assertEqual(submit_payload["task_id"], 808)
+            self.assertEqual(submit_payload["status"], "pending")
+
+            # 2. Check running status via JSON-RPC
+            poll_req = {
+                "jsonrpc": "2.0",
+                "id": 302,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_submit_dynamic_sandbox",
+                    "arguments": {"task_id": 808},
+                },
+            }
+            poll_resp = self.server.handle_request(poll_req)
+            self.assertNotIn("error", poll_resp)
+            poll_payload = json.loads(poll_resp["result"]["content"][0]["text"])
+            self.assertTrue(poll_payload["success"])
+            self.assertEqual(poll_payload["status"], "running")
+            self.assertFalse(poll_payload["completed"])
+
 
 if __name__ == "__main__":
     unittest.main()
+
