@@ -36,7 +36,7 @@ from core.tool_indexer import ToolchainIndexer
 
 
 SERVER_NAME = "cookie-cyber-team"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.0.1"
 PROTOCOL_VERSION = "2024-11-05"
 
 

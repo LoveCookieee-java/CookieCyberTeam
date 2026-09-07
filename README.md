@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LoveCookieee-java/CookieCyberTeam"><img src="https://img.shields.io/badge/Release-v1.0.0-blue.svg?style=flat-square" alt="Release"></a>
+  <a href="https://github.com/LoveCookieee-java/CookieCyberTeam"><img src="https://img.shields.io/badge/Release-v1.0.1-blue.svg?style=flat-square" alt="Release"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
   <a href="#verification--benchmarks"><img src="https://img.shields.io/badge/Tests-290%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
@@ -261,7 +261,7 @@ Add CookieCyberTeam directly to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/LoveCookieee-java/CookieCyberTeam
-    rev: v1.0.0
+    rev: v1.0.1
     hooks:
       - id: cookiecyber-scan
         args: ["--fail-on", "high"]
