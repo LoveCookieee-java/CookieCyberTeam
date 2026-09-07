@@ -11,15 +11,17 @@ import ast
 import difflib
 import json
 import os
+import re
 import secrets
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.ast_scanner import ASTScanner, Finding
 from core.config import (
-    BlueTeamConfig,
+    CookieCyberConfig,
     DEFAULT_DIFF_CAP_LIMIT,
     DEFAULT_NEW_FILE_CAP_LIMIT,
     DEFAULT_RESTRICTED_BRANCHES,
@@ -572,6 +574,374 @@ def check_polyglot_syntax(code: str, file_path: str = "") -> None:
     validate_code_delimiters(code, file_path=file_path)
 
 
+def apply_patch_hunks(original_text: str, hunks: List[Dict[str, Any]]) -> str:
+    """
+    Apply a list of hunks with sliding window matching (+/- 10 lines) and global fallback.
+    Hunk format: {"start_line": int, "end_line": int, "target_content": str, "replacement_chunk": str}
+    """
+    lines = original_text.splitlines(keepends=True)
+    sorted_hunks = sorted(hunks, key=lambda h: int(h.get("start_line", 1)), reverse=True)
+
+    for hunk in sorted_hunks:
+        start_line = int(hunk.get("start_line", 1))
+        end_line = int(hunk.get("end_line", start_line))
+        target_content = hunk.get("target_content", "")
+        replacement = hunk.get("replacement_chunk")
+        if replacement is None:
+            replacement = hunk.get("replacement_content", "")
+
+        idx_start = max(0, start_line - 1)
+        idx_end = min(len(lines), end_line)
+        slice_content = "".join(lines[idx_start:idx_end])
+
+        match_idx = None
+        match_len = None
+
+        if slice_content == target_content or slice_content.rstrip("\r\n") == target_content.rstrip("\r\n"):
+            match_idx = idx_start
+            match_len = idx_end - idx_start
+        else:
+            # Sliding window matching (+/- 10 lines)
+            target_norm = target_content.rstrip("\r\n")
+            target_line_count = len(target_content.splitlines()) or 1
+            window_min = max(0, idx_start - 10)
+            window_max = min(len(lines), idx_end + 10)
+
+            for offset in range(window_min, max(window_min + 1, window_max)):
+                candidate = "".join(lines[offset:offset + target_line_count]).rstrip("\r\n")
+                if candidate == target_norm:
+                    match_idx = offset
+                    match_len = target_line_count
+                    break
+
+        # Whole-file unique fallback
+        if match_idx is None:
+            target_norm = target_content.rstrip("\r\n")
+            target_line_count = len(target_content.splitlines()) or 1
+            matches = []
+            for offset in range(len(lines) - target_line_count + 1):
+                candidate = "".join(lines[offset:offset + target_line_count]).rstrip("\r\n")
+                if candidate == target_norm:
+                    matches.append(offset)
+            if len(matches) == 1:
+                match_idx = matches[0]
+                match_len = target_line_count
+
+        if match_idx is None:
+            raise GuardrailViolation(
+                gate_name="Dual-Format Patch Engine",
+                message=f"Hunk matching failed: target_content at lines {start_line}-{end_line} could not be matched even with +/-10 sliding window.",
+                details={"hunk": hunk},
+            )
+
+        repl_lines = replacement.splitlines(keepends=True)
+        if replacement and not replacement.endswith("\n") and lines and match_idx < len(lines) and lines[match_idx].endswith("\n"):
+            if repl_lines:
+                repl_lines[-1] = repl_lines[-1] + "\n"
+
+        lines[match_idx:match_idx + match_len] = repl_lines
+
+    return "".join(lines)
+
+
+def apply_unified_diff(original_text: str, diff_text: str) -> str:
+    """
+    Apply a unified diff string (--- a/..., +++ b/..., @@ -l,s +l,s @@) to original_text.
+    """
+    orig_lines = original_text.splitlines(keepends=True)
+    diff_lines = diff_text.splitlines(keepends=True)
+
+    hunk_header_re = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+    hunks = []
+    current_hunk = None
+
+    for line in diff_lines:
+        m = hunk_header_re.match(line)
+        if m:
+            if current_hunk:
+                hunks.append(current_hunk)
+            orig_start = int(m.group(1))
+            orig_len = int(m.group(2)) if m.group(2) is not None else 1
+            new_start = int(m.group(3))
+            new_len = int(m.group(4)) if m.group(4) is not None else 1
+            current_hunk = {
+                "orig_start": orig_start,
+                "orig_len": orig_len,
+                "new_start": new_start,
+                "new_len": new_len,
+                "lines": [],
+            }
+        elif current_hunk is not None:
+            if line.startswith(("+", "-", " ")):
+                current_hunk["lines"].append(line)
+
+    if current_hunk:
+        hunks.append(current_hunk)
+
+    if not hunks:
+        raise GuardrailViolation(
+            gate_name="Dual-Format Patch Engine",
+            message="No valid unified diff hunks (@@ ... @@) found in diff_text.",
+        )
+
+    res_lines = list(orig_lines)
+    for h in sorted(hunks, key=lambda x: x["orig_start"], reverse=True):
+        idx = max(0, h["orig_start"] - 1)
+        del_count = 0
+        new_chunk = []
+        for l in h["lines"]:
+            if l.startswith("-"):
+                del_count += 1
+            elif l.startswith("+"):
+                new_chunk.append(l[1:])
+            elif l.startswith(" "):
+                del_count += 1
+                new_chunk.append(l[1:])
+        res_lines[idx:idx + del_count] = new_chunk
+
+    return "".join(res_lines)
+
+
+def resolve_patched_content(
+    original_code: str,
+    patched_content: Optional[str] = None,
+    hunks: Optional[List[Dict[str, Any]]] = None,
+    unified_diff: Optional[str] = None,
+) -> str:
+    """Resolve final patched content across Hunk JSON, Unified Diff, or whole file."""
+    if hunks is not None:
+        return apply_patch_hunks(original_code, hunks)
+    if unified_diff is not None:
+        return apply_unified_diff(original_code, unified_diff)
+    if patched_content is not None:
+        stripped = patched_content.strip()
+        if (stripped.startswith("--- ") or stripped.startswith("@@ ")) and "@@ " in stripped:
+            return apply_unified_diff(original_code, patched_content)
+        return patched_content
+    raise GuardrailViolation(
+        gate_name="Dual-Format Patch Engine",
+        message="No patch payload provided. Must supply patched_content, hunks, or unified_diff.",
+    )
+
+
+DESTRUCTIVE_PRIMITIVES = [
+    (r"\bos\.remove\s*\(", "os.remove()"),
+    (r"\bos\.unlink\s*\(", "os.unlink()"),
+    (r"\bshutil\.rmtree\s*\(", "shutil.rmtree()"),
+    (r"\bos\.rmdir\s*\(", "os.rmdir()"),
+    (r"\.unlink\s*\(", "Path.unlink()"),
+    (r"\.rmdir\s*\(", "Path.rmdir()"),
+    (r"\b(?:rm|del|Remove-Item)\s+-[rf]+", "shell deletion (rm/del/Remove-Item)"),
+]
+
+
+def check_zero_deletion(patched_code: str, file_path: str = "") -> None:
+    """Gate 4: Absolute Prohibition of Unauthorized File Deletion Primitives."""
+    for pattern, name in DESTRUCTIVE_PRIMITIVES:
+        if re.search(pattern, patched_code):
+            raise GuardrailViolation(
+                gate_name="Gate 4 Zero-Deletion Invariant",
+                message=(
+                    f"Forbidden file deletion primitive detected: '{name}'. "
+                    "Zero-Deletion Invariant strictly prohibits deleting workspace files or data. "
+                    "Use Safe Containment (.quarantine/ vault) or inert relocation instead."
+                ),
+                details={"matched_primitive": name, "file": file_path},
+            )
+
+
+STDLIB_EQUIVALENTS = {
+    "requests": "urllib.request",
+    "pytz": "zoneinfo",
+    "simplejson": "json",
+    "mock": "unittest.mock",
+}
+
+
+def check_ponytail_linter(
+    original_code: str,
+    patched_code: str,
+    file_path: str = "",
+    repo_path: Optional[Union[str, Path]] = None,
+) -> None:
+    """
+    Gate 1.5: Ponytail Linter (Zero-Bloat Gate).
+    Enforces the Ponytail Principle:
+    1. Rejects dead code (functions/classes added without callers or __all__ export).
+    2. Prioritizes Python standard library over unlisted 3rd-party dependencies.
+    """
+    p = Path(file_path)
+    # Skip dead code checks on test files or fixtures
+    is_test_file = "test" in p.name.lower() or "tests" in [part.lower() for part in p.parts]
+
+    ext = p.suffix.lower()
+    is_python = ext in (".py", ".pyw") or file_path in ("", "patched_file.py")
+
+    if not is_python:
+        return
+
+    try:
+        patched_ast = ast.parse(patched_code, filename=file_path)
+    except SyntaxError:
+        return
+
+    orig_ast = None
+    if original_code.strip():
+        try:
+            orig_ast = ast.parse(original_code, filename=file_path)
+        except SyntaxError:
+            pass
+
+    orig_defs: Set[str] = set()
+    if orig_ast:
+        for n in ast.walk(orig_ast):
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                orig_defs.add(n.name)
+
+    patched_defs: Set[str] = set()
+    for n in ast.walk(patched_ast):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            patched_defs.add(n.name)
+
+    new_defs = patched_defs - orig_defs
+
+    # Check __all__
+    all_exports: Set[str] = set()
+    for stmt in patched_ast.body:
+        if isinstance(stmt, ast.Assign):
+            for t in stmt.targets:
+                if isinstance(t, ast.Name) and t.id == "__all__":
+                    if isinstance(stmt.value, (ast.List, ast.Tuple, ast.Set)):
+                        for elt in stmt.value.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                all_exports.add(elt.value)
+
+    # 1. Dead Code Check (YAGNI)
+    if not is_test_file:
+        for sym in new_defs:
+            if sym in all_exports:
+                continue
+            refs = 0
+            for n in ast.walk(patched_ast):
+                if isinstance(n, ast.Name) and n.id == sym:
+                    refs += 1
+                elif isinstance(n, ast.Attribute) and n.attr == sym:
+                    refs += 1
+            if refs == 0:
+                raise GuardrailViolation(
+                    gate_name="Gate 1.5 Ponytail Linter",
+                    message=(
+                        f"Dead code detected: New function or class '{sym}' defined without any "
+                        "caller, reference, or export in __all__ (Ponytail Principle / YAGNI)."
+                    ),
+                    details={"dead_symbol": sym, "file": file_path},
+                )
+
+    # 2. Stdlib Prioritization
+    orig_imports: Set[str] = set()
+    if orig_ast:
+        for n in ast.walk(orig_ast):
+            if isinstance(n, ast.Import):
+                for alias in n.names:
+                    orig_imports.add(alias.name.split(".")[0])
+            elif isinstance(n, ast.ImportFrom) and n.module:
+                orig_imports.add(n.module.split(".")[0])
+
+    patched_imports: Set[str] = set()
+    for n in ast.walk(patched_ast):
+        if isinstance(n, ast.Import):
+            for alias in n.names:
+                patched_imports.add(alias.name.split(".")[0])
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            patched_imports.add(n.module.split(".")[0])
+
+    new_imports = patched_imports - orig_imports
+    for imp in new_imports:
+        if imp in STDLIB_EQUIVALENTS:
+            equiv = STDLIB_EQUIVALENTS[imp]
+            # Check if declared in project dependencies
+            is_listed = False
+            search_dirs = [p.parent, *p.parents] if file_path else []
+            if repo_path:
+                search_dirs.insert(0, Path(repo_path))
+            for d in search_dirs:
+                req_f = d / "requirements.txt"
+                if req_f.is_file():
+                    if imp.lower() in req_f.read_text(encoding="utf-8", errors="ignore").lower():
+                        is_listed = True
+                        break
+                pyp_f = d / "pyproject.toml"
+                if pyp_f.is_file():
+                    if imp.lower() in pyp_f.read_text(encoding="utf-8", errors="ignore").lower():
+                        is_listed = True
+                        break
+            if not is_listed:
+                raise GuardrailViolation(
+                    gate_name="Gate 1.5 Ponytail Linter",
+                    message=(
+                        f"Unlisted 3rd-party dependency '{imp}' imported when standard library '{equiv}' "
+                        "is available. Prioritize stdlib (Ponytail Principle)."
+                    ),
+                    details={"imported_package": imp, "stdlib_alternative": equiv, "file": file_path},
+                )
+
+
+class TransactionalPatchSession:
+    """
+    Transactional Patch Session with automated snapshot backup and rollback.
+    If sandbox tests or validations fail, automatically rolls back target file.
+    """
+    def __init__(self, target_file_path: Union[str, Path]):
+        self.target_file = Path(target_file_path).resolve()
+        self.original_exists = self.target_file.exists()
+        self.original_content = (
+            self.target_file.read_text(encoding="utf-8", errors="replace")
+            if self.original_exists else None
+        )
+        self.committed = False
+
+    def __enter__(self) -> TransactionalPatchSession:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        if exc_type is not None and not self.committed:
+            self.rollback()
+        return False
+
+    def rollback(self) -> None:
+        """Rollback target file to original snapshot."""
+        if not self.original_exists:
+            if self.target_file.exists():
+                try:
+                    os.unlink(str(self.target_file))
+                except Exception:
+                    pass
+        else:
+            if self.original_content is not None:
+                self.target_file.write_text(self.original_content, encoding="utf-8")
+
+    def commit(self) -> None:
+        """Commit patch permanently."""
+        self.committed = True
+
+    def verify_and_commit(self, verification_callable: Any) -> bool:
+        """
+        Execute verification test callable.
+        If it returns False or raises an exception, automatically roll back.
+        """
+        try:
+            passed = bool(verification_callable())
+            if passed:
+                self.commit()
+                return True
+            else:
+                self.rollback()
+                return False
+        except Exception:
+            self.rollback()
+            raise
+
+
 class SafePatchManager:
     """Orchestrates patch validation across mandatory safety gates."""
 
@@ -581,12 +951,12 @@ class SafePatchManager:
         new_file_cap: Optional[int] = None,
         semgrep: Optional[SemgrepAdapter] = None,
         enforce_token: bool = False,
-        config: Optional[BlueTeamConfig] = None,
+        config: Optional[CookieCyberConfig] = None,
         restricted_branches: Optional[Set[str]] = None,
         workspace_root: Optional[Union[str, Path]] = None,
         allowed_roots: Optional[List[Union[str, Path]]] = None,
     ):
-        self.config = config or BlueTeamConfig()
+        self.config = config or CookieCyberConfig()
         self.diff_cap = diff_cap if diff_cap is not None else self.config.diff_cap_limit
         self.new_file_cap = new_file_cap if new_file_cap is not None else self.config.new_file_cap_limit
         self.restricted_branches = (
@@ -815,18 +1185,118 @@ class SafePatchManager:
 
         return {"passed": True, "committer": committer, "token_verified": bool(committer_token)}
 
-    def apply_safe_patch(
+    def preview_surgical_patch(
         self,
-        target_file_path: str | Path,
-        patched_content: str,
-        task_id: str = "bugfix",
-        repo_path: Optional[str | Path] = None,
+        target_file_path: Union[str, Path],
+        patched_content: Optional[str] = None,
+        hunks: Optional[List[Dict[str, Any]]] = None,
+        unified_diff: Optional[str] = None,
+        task_id: str = "preview",
+        repo_path: Optional[Union[str, Path]] = None,
         committer: str = "Lead Orchestrator",
         committer_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Validate all mandatory gates (Single-Committer, Diff Cap, Zero-Regression SAST, Branch Isolation)
-        and atomically apply patch if successful.
+        Dry-run evaluation of all gates without modifying the target file on disk.
+        Returns diff preview, stats, and gate statuses.
+        """
+        committer_stats = self.check_single_committer(committer, committer_token=committer_token)
+
+        raw_target = Path(target_file_path)
+        if not raw_target.is_absolute() and self.workspace_root:
+            target = (self.workspace_root / raw_target).resolve()
+        else:
+            target = raw_target.resolve()
+
+        # Security: Prevent writing inside .git directory or sensitive files
+        lower_parts = [p.lower() for p in target.parts]
+        if ".git" in lower_parts:
+            raise GuardrailViolation(
+                gate_name="Git Branch Isolation Gate",
+                message="Cannot target .git internal repository files.",
+                details={"target_file": str(target)},
+            )
+        sensitive_parts = {".ssh", ".aws", ".config"}
+        if any(p in sensitive_parts or p.startswith(".env") for p in lower_parts):
+            raise GuardrailViolation(
+                gate_name="Diff Cap Gate",
+                message=f"Cannot apply patch to sensitive configuration file '{target.name}'.",
+                details={"target_file": str(target)},
+            )
+
+        is_new_file = not target.exists()
+        original_code = ""
+        if not is_new_file:
+            original_code = target.read_text(encoding="utf-8", errors="replace")
+            if not original_code.strip():
+                is_new_file = True
+
+        final_patched = resolve_patched_content(
+            original_code,
+            patched_content=patched_content,
+            hunks=hunks,
+            unified_diff=unified_diff,
+        )
+
+        repo = repo_path or find_git_root(target)
+
+        # Gate 4: Zero-Deletion Invariant
+        check_zero_deletion(final_patched, file_path=str(target))
+
+        # Gate 1.5: Ponytail Linter
+        check_ponytail_linter(original_code, final_patched, file_path=str(target), repo_path=repo)
+
+        # Gate 1: Diff Cap
+        diff_stats = self.check_diff_cap(
+            original_code,
+            final_patched,
+            file_name=target.name,
+            is_new_file=is_new_file,
+        )
+
+        # Gate 2: AST & SAST Zero Regression
+        regression_stats = self.check_syntax_and_zero_regression(
+            original_code,
+            final_patched,
+            file_path=str(target),
+        )
+
+        # Gate 3: Git Branch Isolation
+        branch_stats = self.check_branch_isolation(repo, task_id)
+
+        return {
+            "success": True,
+            "preview_mode": True,
+            "target_file": str(target),
+            "committer": committer_stats.get("committer"),
+            "token_verified": committer_stats.get("token_verified", False),
+            "diff_stats": diff_stats,
+            "regression_stats": regression_stats,
+            "branch": branch_stats.get("branch"),
+            "gates_passed": [
+                "Single-Committer Gate",
+                "Gate 1 Diff Cap",
+                "Gate 1.5 Ponytail Linter",
+                "Gate 2 Zero-Regression SAST",
+                "Gate 3 Git Branch Isolation",
+                "Gate 4 Zero-Deletion Invariant",
+            ],
+        }
+
+    def apply_safe_patch(
+        self,
+        target_file_path: Union[str, Path],
+        patched_content: Optional[str] = None,
+        hunks: Optional[List[Dict[str, Any]]] = None,
+        unified_diff: Optional[str] = None,
+        task_id: str = "bugfix",
+        repo_path: Optional[Union[str, Path]] = None,
+        committer: str = "Lead Orchestrator",
+        committer_token: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Validate all mandatory gates (Single-Committer, Zero-Deletion, Ponytail Linter,
+        Diff Cap, Zero-Regression SAST, Branch Isolation) and atomically apply patch if successful.
         """
         # 0. Gate 0: Single-Committer Gate
         committer_stats = self.check_single_committer(committer, committer_token=committer_token)
@@ -877,10 +1347,25 @@ class SafePatchManager:
             if not original_code.strip():
                 is_new_file = True
 
+        final_patched = resolve_patched_content(
+            original_code,
+            patched_content=patched_content,
+            hunks=hunks,
+            unified_diff=unified_diff,
+        )
+
+        repo = repo_path or find_git_root(target)
+
+        # Gate 4: Zero-Deletion Invariant
+        check_zero_deletion(final_patched, file_path=str(target))
+
+        # Gate 1.5: Ponytail Linter
+        check_ponytail_linter(original_code, final_patched, file_path=str(target), repo_path=repo)
+
         # 1. Gate 1: Diff Cap
         diff_stats = self.check_diff_cap(
             original_code,
-            patched_content,
+            final_patched,
             file_name=target.name,
             is_new_file=is_new_file,
         )
@@ -888,19 +1373,18 @@ class SafePatchManager:
         # 2. Gate 2: AST & SAST Zero Regression
         regression_stats = self.check_syntax_and_zero_regression(
             original_code,
-            patched_content,
+            final_patched,
             file_path=str(target),
         )
 
         # 3. Gate 3: Git Branch Isolation
-        repo = repo_path or find_git_root(target)
         branch_stats = self.check_branch_isolation(repo, task_id)
 
         # Atomic Write
         target.parent.mkdir(parents=True, exist_ok=True)
         temp_file = target.with_suffix(f"{target.suffix}.tmp")
         try:
-            temp_file.write_text(patched_content, encoding="utf-8")
+            temp_file.write_text(final_patched, encoding="utf-8")
             # os.replace is atomic
             os.replace(temp_file, target)
         finally:

@@ -1,7 +1,7 @@
 """
-Blue Team MCP Security Guardrails & Multi-Agent Orchestration Server.
+CookieCyberTeam MCP Security Guardrails & Multi-Agent Orchestration Server.
 Standard JSON-RPC 2.0 stdio MCP Server.
-Packages 11 Tools, 6 Resources, and 6 Prompts for safe, scientific defensive engineering,
+Packages 16 Tools, 8 Resources, and 6 Prompts for safe, scientific defensive engineering,
 zero-regression patching, air-gapped binary triage, and multi-agent coordination.
 """
 
@@ -17,7 +17,7 @@ from core.ast_scanner import ASTScanner
 from core.binary_triage import BinaryTriageEngine
 from core.cape_adapter import CapeSandboxAdapter
 from core.code_search import HybridCodeSearch
-from core.config import BlueTeamConfig
+from core.config import CookieCyberConfig
 from core.containment import (
     generate_firewall_rule,
     quarantine_file,
@@ -27,14 +27,16 @@ from core.containment import (
 from core.cvss_calculator import cvss_for_cwe, calculate_cvss_score
 from core.dag_engine import DAGEngine, DAGCycleError, MAX_HOP_TTL
 from core.guardrails import SafePatchManager, GuardrailViolation, find_git_root
+from core.project_profiler import ProjectGenomeProfiler
 from core.sandbox_runner import SandboxRunner
+from core.sca_scanner import SCAScanner
 from core.semgrep_adapter import SemgrepAdapter
 from core.soc_rules import SOCRuleEngine
 from core.tool_indexer import ToolchainIndexer
 
 
-SERVER_NAME = "blue-team-security-guardrails"
-SERVER_VERSION = "1.3.0"
+SERVER_NAME = "cookie-cyber-team"
+SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2024-11-05"
 
 
@@ -42,7 +44,7 @@ PROTOCOL_VERSION = "2024-11-05"
 # Static Security Resources Content
 # ---------------------------------------------------------------------------
 
-SECURITY_STANDARDS_RESOURCE = """# Blue Team Security Standards & Defensive Guardrails
+SECURITY_STANDARDS_RESOURCE = """# CookieCyberTeam Security Standards & Defensive Guardrails
 
 ## 1. Zero-Trust Command Execution (CWE-78 Prevention)
 - **Rule**: Absolute prohibition of `shell=True` in all subprocess, os, and runner invocations.
@@ -165,7 +167,7 @@ COMPROMISE_ASSESSMENT_PLAYBOOK_RESOURCE = """# Multi-Agent Compromise Assessment
 # MCP Server Implementation
 # ---------------------------------------------------------------------------
 
-class BlueTeamMCPServer:
+class CookieCyberMCPServer:
     """Standard JSON-RPC 2.0 Stdio MCP Server."""
 
     def __init__(
@@ -173,14 +175,14 @@ class BlueTeamMCPServer:
         db_path: Optional[str | Path] = None,
         workspace_root: Optional[str | Path] = None,
         allowed_roots: Optional[List[str | Path]] = None,
-        config: Optional[BlueTeamConfig] = None,
+        config: Optional[CookieCyberConfig] = None,
     ):
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
         if allowed_roots:
             self.allowed_roots = [Path(r).resolve() for r in allowed_roots]
         else:
             self.allowed_roots = [self.workspace_root]
-        self.config = config or BlueTeamConfig.load_from_repo(self.workspace_root)
+        self.config = config or CookieCyberConfig.load_from_repo(self.workspace_root)
         self.scanner = ASTScanner(config=self.config)
         self.semgrep = SemgrepAdapter()
         self.sandbox = SandboxRunner()
@@ -197,10 +199,76 @@ class BlueTeamMCPServer:
         self.binary_triage_engine = BinaryTriageEngine()
         self.soc_engine = SOCRuleEngine()
         self.cape_adapter = CapeSandboxAdapter()
+        self.profiler = ProjectGenomeProfiler(workspace_root=self.workspace_root)
+        self.sca_scanner = SCAScanner(workspace_root=self.workspace_root)
 
     # -----------------------------------------------------------------------
-    # Tool Handlers (11 Tools)
+    # Tool Handlers (16 Tools)
     # -----------------------------------------------------------------------
+
+    def tool_adaptive_guide(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate dynamic cognitive anchor and workflow playbook for given task intent."""
+        task_intent = args.get("task_intent", "security_audit")
+        active_file = args.get("active_file")
+        return self.profiler.get_adaptive_guide(task_intent=task_intent, active_file=active_file)
+
+    def tool_audit_dependencies(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Perform offline Software Composition Analysis (SCA) on dependency manifests."""
+        scan_path = args.get("path")
+        return self.sca_scanner.audit_workspace(scan_dir=scan_path)
+
+    def tool_preview_surgical_patch(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Dry-run preview of patch application validating Gate 1.5, Gate 2, Gate 4."""
+        target_file = args.get("target_file")
+        if not target_file:
+            return {"success": False, "error": "target_file is required for patch preview."}
+
+        raw_path = Path(target_file)
+        if not raw_path.is_absolute():
+            resolved_target = (self.workspace_root / raw_path).resolve()
+        else:
+            resolved_target = raw_path.resolve()
+
+        is_confined = any(resolved_target == root or root in resolved_target.parents for root in self.allowed_roots)
+        if not is_confined:
+            return {
+                "success": False,
+                "violation": True,
+                "gate": "Git Branch Isolation Gate",
+                "message": f"Path traversal violation: Target '{target_file}' resolves outside allowed workspace root: {self.workspace_root}",
+                "details": {"target_file": str(resolved_target)},
+            }
+
+        return self.patch_manager.preview_surgical_patch(
+            target_file=resolved_target,
+            hunks=args.get("hunks"),
+            unified_diff=args.get("unified_diff"),
+            patched_content=args.get("patched_content"),
+        )
+
+    def tool_restore_quarantined_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Restore quarantined artifact from encrypted vault back to workspace."""
+        quarantine_path = args.get("quarantine_path")
+        if not quarantine_path:
+            return {"success": False, "error": "quarantine_path is required."}
+        dest = args.get("original_destination")
+        return restore_quarantined_file(
+            quarantine_path=quarantine_path,
+            original_destination=dest,
+            workspace_root=self.workspace_root,
+        )
+
+    def tool_terminate_process(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Safely terminate a suspicious process and its entire descendant child process tree."""
+        pid = args.get("pid")
+        if pid is None:
+            return {"success": False, "error": "pid is required."}
+        try:
+            pid = int(pid)
+        except ValueError:
+            return {"success": False, "error": f"Invalid PID: {pid}"}
+        timeout = float(args.get("timeout", 3.0))
+        return terminate_suspicious_process(pid=pid, timeout=timeout)
 
     def tool_scan_vulnerabilities(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Scan file or snippet for security vulnerabilities using AST or Semgrep."""
@@ -373,14 +441,16 @@ class BlueTeamMCPServer:
         """Apply patch with Diff Cap, Zero-Regression SAST, and Branch Isolation gates."""
         target_file = args.get("target_file")
         patched_content = args.get("patched_content")
+        hunks = args.get("hunks")
+        unified_diff = args.get("unified_diff")
         task_id = args.get("task_id", "bugfix")
         repo_path = args.get("repo_path")
 
         committer = args.get("committer", "Lead Orchestrator")
         committer_token = args.get("committer_token")
 
-        if not target_file or patched_content is None:
-            return {"success": False, "error": "target_file and patched_content are required."}
+        if not target_file or (patched_content is None and hunks is None and unified_diff is None):
+            return {"success": False, "error": "target_file and at least one of (hunks, unified_diff, patched_content) are required."}
 
         raw_path = Path(target_file)
         if not raw_path.is_absolute():
@@ -403,6 +473,8 @@ class BlueTeamMCPServer:
             res = self.patch_manager.apply_safe_patch(
                 target_file_path=effective_target,
                 patched_content=patched_content,
+                hunks=hunks,
+                unified_diff=unified_diff,
                 task_id=task_id,
                 repo_path=repo_path,
                 committer=committer,
@@ -643,11 +715,38 @@ class BlueTeamMCPServer:
     # -----------------------------------------------------------------------
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """Return MCP standard Tool definitions (11 Tools)."""
+        """Return MCP standard Tool definitions (16 Tools)."""
         return [
             {
+                "name": "mcp_adaptive_guide",
+                "description": "Adaptive Meta-Guide and Cognitive Anchor. Discovers project genome (<5ms) and outputs optimal tool call sequence, active guardrail rules, exact targeted test commands, and prohibited actions tailored to task intent.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "task_intent": {
+                            "type": "string",
+                            "enum": [
+                                "security_audit",
+                                "bugfix_patch",
+                                "test_verification",
+                                "binary_triage",
+                                "containment_incident",
+                                "dependency_audit",
+                                "code_exploration",
+                            ],
+                            "default": "security_audit",
+                            "description": "Intended action or objective.",
+                        },
+                        "active_file": {
+                            "type": "string",
+                            "description": "Optional file path currently being inspected or edited to generate targeted test commands.",
+                        },
+                    },
+                },
+            },
+            {
                 "name": "mcp_scan_vulnerabilities",
-                "description": "Performs SAST security scan using Pure-Python AST Engine (CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295, CWE-22, CWE-327, CWE-328, CWE-377, CWE-352), Delta Git scanning, CVSS scoring (v3.1 & v4.0), and OASIS SARIF v2.1.0 export.",
+                "description": "Performs SAST security scan using Pure-Python AST Engine (CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295, CWE-22, CWE-327, CWE-328, CWE-377, CWE-352, CWE-611, CWE-918, CWE-79, CWE-1336, CWE-943, CWE-400), Call Graph Taint Analysis, Delta Git scanning, CVSS scoring (v3.1 & v4.0), and OASIS SARIF v2.1.0 export.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -661,6 +760,19 @@ class BlueTeamMCPServer:
                             "enum": ["json", "sarif"],
                             "description": "Output report format: 'json' (default) or 'sarif' (OASIS SARIF v2.1.0 standard).",
                             "default": "json",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "mcp_audit_dependencies",
+                "description": "Performs offline Software Composition Analysis (SCA) on workspace dependency files (requirements.txt, pyproject.toml, poetry.lock) against curated offline OSV JSON vulnerability database.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Optional directory or dependency file path to audit (defaults to workspace root).",
                         },
                     },
                 },
@@ -692,19 +804,43 @@ class BlueTeamMCPServer:
                 },
             },
             {
+                "name": "mcp_preview_surgical_patch",
+                "description": "Dry-run preview of surgical patch application. Validates Gate 1.5 (Ponytail linter: dead code, stdlib preference), Gate 2 (Diff Cap <=50 lines), Gate 4 (Zero-Deletion invariant), and returns generated unified diff without modifying disk.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_file": {"type": "string", "description": "File path to apply the preview patch to."},
+                        "hunks": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "List of hunk objects: [{'start_line': int, 'end_line': int, 'target_content': str, 'replacement_content': str}].",
+                        },
+                        "unified_diff": {"type": "string", "description": "Standard unified diff string (--- a/ +++ b/ @@ ...)."},
+                        "patched_content": {"type": "string", "description": "Complete new content for the target file."},
+                    },
+                    "required": ["target_file"],
+                },
+            },
+            {
                 "name": "mcp_apply_safe_patch",
-                "description": "Applies source code patch protected by 4 safety guardrails: Single-Committer authority, Diff Cap (<=50 lines), Zero-Regression SAST, and Git Branch Isolation.",
+                "description": "Applies source code patch protected by 5 safety guardrails: Single-Committer authority, Gate 1.5 Ponytail Linter (Dead code, stdlib priority), Diff Cap (<=50 lines), Zero-Regression SAST, and Gate 4 Zero-Deletion.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "target_file": {"type": "string", "description": "File path to apply the patch to."},
+                        "hunks": {
+                            "type": "array",
+                            "items": {"type": "object"},
+                            "description": "List of hunk objects: [{'start_line': int, 'end_line': int, 'target_content': str, 'replacement_content': str}].",
+                        },
+                        "unified_diff": {"type": "string", "description": "Standard unified diff string (--- a/ +++ b/ @@ ...)."},
                         "patched_content": {"type": "string", "description": "Complete new content for the target file."},
                         "task_id": {"type": "string", "description": "Identifier of the fixing task (default: 'bugfix')."},
                         "repo_path": {"type": "string", "description": "Optional Git repository root path."},
                         "committer": {"type": "string", "description": "Agent persona applying the patch. Only 'Lead Orchestrator' is authorized (Single-Committer Gate).", "default": "Lead Orchestrator"},
                         "committer_token": {"type": "string", "description": "Ephemeral capability session token issued to Lead Orchestrator for authorized patch application."},
                     },
-                    "required": ["target_file", "patched_content"],
+                    "required": ["target_file"],
                 },
             },
             {
@@ -747,7 +883,7 @@ class BlueTeamMCPServer:
             },
             {
                 "name": "mcp_search_code",
-                "description": "Surgical code search using AST Syntactic Chunking + SQLite FTS5 BM25 + Reciprocal Rank Fusion. Returns targeted class/function chunks (<100 tokens).",
+                "description": "Surgical code search using Semble-style tokenization, syntactic method/skeleton chunking, and SQLite FTS5 BM25. Returns targeted chunks (<100 tokens).",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -755,6 +891,7 @@ class BlueTeamMCPServer:
                         "target_path": {"type": "string", "description": "Target file or directory path to index and search."},
                         "top_k": {"type": "integer", "description": "Maximum number of chunks to return (default: 5)."},
                         "extensions": {"type": "array", "items": {"type": "string"}, "description": "File extensions to include (e.g. ['.py', '.js', '.ts', '.go', '.java', '.c', '.cpp'])."},
+                        "mode": {"type": "string", "enum": ["full", "skeleton", "compact"], "description": "Chunk presentation mode (default: 'full').", "default": "full"},
                     },
                     "required": ["query"],
                 },
@@ -851,6 +988,24 @@ class BlueTeamMCPServer:
                 },
             },
             {
+                "name": "mcp_restore_quarantined_file",
+                "description": "Restores a previously quarantined file from the encrypted/obfuscated vault back to its original destination or workspace.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "quarantine_path": {
+                            "type": "string",
+                            "description": "Path to the quarantined encrypted file in the vault.",
+                        },
+                        "original_destination": {
+                            "type": "string",
+                            "description": "Optional path where the file should be restored. If omitted, restored to original location recorded in manifest.",
+                        },
+                    },
+                    "required": ["quarantine_path"],
+                },
+            },
+            {
                 "name": "mcp_generate_containment_rule",
                 "description": "Generates host containment and firewall rules across Windows Defender Firewall (netsh), Linux iptables, Linux UFW, and DNS sinkhole formats to block malicious C2 IPs or domains.",
                 "inputSchema": {
@@ -874,14 +1029,33 @@ class BlueTeamMCPServer:
                     "required": ["target"],
                 },
             },
+            {
+                "name": "mcp_terminate_process",
+                "description": "Safely terminates a suspicious or rogue process and its entire descendant child process tree (using taskkill /T on Windows, process groups / SIGKILL on Linux) under containment protocols.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pid": {
+                            "type": "integer",
+                            "description": "Process ID (PID) to terminate.",
+                        },
+                        "timeout": {
+                            "type": "number",
+                            "description": "Timeout in seconds to wait for graceful termination before force killing (default: 3.0).",
+                            "default": 3.0,
+                        },
+                    },
+                    "required": ["pid"],
+                },
+            },
         ]
 
     def get_resource_definitions(self) -> List[Dict[str, Any]]:
-        """Return MCP standard Resource definitions (6 Resources)."""
+        """Return MCP standard Resource definitions (8 Resources)."""
         return [
             {
                 "uri": "mcp://rules/security-standards",
-                "name": "Blue Team Security Standards & Defensive Guardrails",
+                "name": "CookieCyberTeam Security Standards & Defensive Guardrails",
                 "description": "Standard checklist for CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295, file protection invariants, and zero-trust conventions.",
                 "mimeType": "text/markdown",
             },
@@ -915,6 +1089,18 @@ class BlueTeamMCPServer:
                 "description": "Server containment, unauthorized file deletion prevention, single-committer isolation, and OWASP Top 10 for Agentic Systems.",
                 "mimeType": "text/markdown",
             },
+            {
+                "uri": "mcp://context/project-genome",
+                "name": "CookieCyberTeam Project Genome Profile",
+                "description": "Sub-5ms discovery of project language, frameworks, test runners, git status, risk profile, and adaptive recommendations.",
+                "mimeType": "application/json",
+            },
+            {
+                "uri": "mcp://rules/active-guardrails",
+                "name": "CookieCyberTeam Active Security Guardrails & Gate Policies",
+                "description": "Active runtime configuration of all 5 Zero-Trust Guardrail Gates (Syntax, Ponytail Linter, Diff Cap, SAST, Zero-Deletion).",
+                "mimeType": "application/json",
+            },
         ]
 
     def read_resource(self, uri: str) -> Dict[str, Any]:
@@ -932,6 +1118,29 @@ class BlueTeamMCPServer:
             return {"uri": uri, "mimeType": "text/markdown", "text": MALWARE_TRIAGE_PLAYBOOK_RESOURCE}
         elif uri == "mcp://playbooks/compromise-assessment":
             return {"uri": uri, "mimeType": "text/markdown", "text": COMPROMISE_ASSESSMENT_PLAYBOOK_RESOURCE}
+        elif uri == "mcp://context/project-genome":
+            genome = self.profiler.discover()
+            return {"uri": uri, "mimeType": "application/json", "text": json.dumps(genome, indent=2)}
+        elif uri == "mcp://rules/active-guardrails":
+            rules = {
+                "server": SERVER_NAME,
+                "version": SERVER_VERSION,
+                "workspace_root": str(self.workspace_root),
+                "allowed_roots": [str(r) for r in self.allowed_roots],
+                "gates": {
+                    "gate_1_syntax": "Polyglot Syntax Dispatch & Delimiter Verification",
+                    "gate_1_5_ponytail": {
+                        "dead_code_check": "YAGNI check: rejects uncalled symbols unless in __all__",
+                        "stdlib_prioritization": "Rejects 3rd-party dependencies when stdlib equivalent exists unless listed in project",
+                        "diff_cap": "50 lines for modification, 250 lines for scaffolding",
+                    },
+                    "gate_2_diff_cap": self.config.max_diff_lines if hasattr(self.config, "max_diff_lines") else 50,
+                    "gate_3_sast_regression": "Zero new CWE vulnerabilities or count regressions",
+                    "gate_4_zero_deletion": "Absolute prohibition of file deletion primitives (os.remove, unlink, shutil.rmtree, shell rm/del)",
+                    "gate_5_git_isolation": "Protected branch commit prevention and single-committer capability token",
+                },
+            }
+            return {"uri": uri, "mimeType": "application/json", "text": json.dumps(rules, indent=2)}
         raise ValueError(f"Resource not found: {uri}")
 
     def get_prompt_definitions(self) -> List[Dict[str, Any]]:
@@ -1069,7 +1278,7 @@ class BlueTeamMCPServer:
             raise ValueError(f"Unknown prompt name: {name}")
 
         return {
-            "description": f"Blue Team Role: {name}",
+            "description": f"CookieCyberTeam Role: {name}",
             "messages": [
                 {
                     "role": "user",
@@ -1085,13 +1294,16 @@ class BlueTeamMCPServer:
     def handle_call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Dispatch a tool call to its respective handler and return structured result dictionary.
-        Supports safe JSON-RPC execution of all 11 registered MCP tools.
+        Supports safe JSON-RPC execution of all 16 registered MCP tools.
         """
         args = arguments or {}
         handler_map: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
+            "mcp_adaptive_guide": self.tool_adaptive_guide,
             "mcp_scan_vulnerabilities": self.tool_scan_vulnerabilities,
+            "mcp_audit_dependencies": self.tool_audit_dependencies,
             "mcp_execute_sandbox_test": self.tool_execute_sandbox_test,
             "mcp_create_reproduction_test": self.tool_create_reproduction_test,
+            "mcp_preview_surgical_patch": self.tool_preview_surgical_patch,
             "mcp_apply_safe_patch": self.tool_apply_safe_patch,
             "mcp_orchestrate_dag": self.tool_orchestrate_dag,
             "mcp_search_code": self.tool_search_code,
@@ -1099,7 +1311,9 @@ class BlueTeamMCPServer:
             "mcp_run_diagnostic_tool": self.tool_run_diagnostic_tool,
             "mcp_submit_dynamic_sandbox": self.tool_submit_dynamic_sandbox,
             "mcp_quarantine_artifact": self.tool_quarantine_artifact,
+            "mcp_restore_quarantined_file": self.tool_restore_quarantined_file,
             "mcp_generate_containment_rule": self.tool_generate_containment_rule,
+            "mcp_terminate_process": self.tool_terminate_process,
         }
 
         if tool_name not in handler_map:
@@ -1233,13 +1447,18 @@ class BlueTeamMCPServer:
 
 def run_self_test() -> bool:
     """Perform comprehensive self-diagnostic test on all components."""
-    print("=== Blue Team MCP Server Self-Test ===")
-    server = BlueTeamMCPServer(db_path=":memory:")
+    print("=== CookieCyberTeam MCP Server Self-Test ===")
+    server = CookieCyberMCPServer(db_path=":memory:")
 
-    # 1. Test Tools list (11 Tools)
+    # 1. Test Tools list (16 Tools)
     tools = server.get_tool_definitions()
-    assert len(tools) == 11, f"Expected 11 tools, got {len(tools)}"
+    assert len(tools) == 16, f"Expected 16 tools, got {len(tools)}"
     tool_names = {t["name"] for t in tools}
+    assert "mcp_adaptive_guide" in tool_names
+    assert "mcp_audit_dependencies" in tool_names
+    assert "mcp_preview_surgical_patch" in tool_names
+    assert "mcp_restore_quarantined_file" in tool_names
+    assert "mcp_terminate_process" in tool_names
     assert "mcp_search_code" in tool_names
     assert "mcp_triage_binary" in tool_names
     assert "mcp_run_diagnostic_tool" in tool_names
@@ -1248,9 +1467,9 @@ def run_self_test() -> bool:
     assert "mcp_generate_containment_rule" in tool_names
     print(f"[PASS] Tools verified: {len(tools)} registered ({', '.join(sorted(tool_names))}).")
 
-    # 2. Test Resources list & read (6 Resources)
+    # 2. Test Resources list & read (8 Resources)
     resources = server.get_resource_definitions()
-    assert len(resources) == 6, f"Expected 6 resources, got {len(resources)}"
+    assert len(resources) == 8, f"Expected 8 resources, got {len(resources)}"
     r_standards = server.read_resource("mcp://rules/security-standards")
     assert "CWE-78" in r_standards["text"]
     r_tool_index = server.read_resource("mcp://state/tool-index")
@@ -1259,6 +1478,10 @@ def run_self_test() -> bool:
     assert "Zero-Execution Policy" in r_malware["text"]
     r_compromise = server.read_resource("mcp://playbooks/compromise-assessment")
     assert "Single-Committer" in r_compromise["text"]
+    r_genome = server.read_resource("mcp://context/project-genome")
+    assert "tech_stack" in r_genome["text"]
+    r_active_rules = server.read_resource("mcp://rules/active-guardrails")
+    assert "gates" in r_active_rules["text"]
     print(f"[PASS] Resources verified: {len(resources)} registered and readable.")
 
     # 3. Test Prompts list & get (6 Prompts)
@@ -1459,10 +1682,11 @@ def run_self_test() -> bool:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Blue Team MCP Security Guardrails & Multi-Agent Orchestration Server")
+    parser = argparse.ArgumentParser(description="CookieCyberTeam MCP Security Guardrails & Multi-Agent Orchestration Server")
     parser.add_argument("--stdio", action="store_true", default=True, help="Run standard JSON-RPC 2.0 stdio loop (default)")
     parser.add_argument("--test-mode", action="store_true", help="Run self-diagnostic component checks and exit")
     parser.add_argument("--run-tests", action="store_true", help="Run all unit tests in tests/ directory")
+    parser.add_argument("--workspace", type=str, default=None, help="Path to workspace root directory")
     parser.add_argument("--version", action="version", version=f"{SERVER_NAME} {SERVER_VERSION}")
 
     args, _ = parser.parse_known_args()
@@ -1478,7 +1702,7 @@ def main() -> None:
         success = run_self_test()
         sys.exit(0 if success else 1)
 
-    server = BlueTeamMCPServer()
+    server = CookieCyberMCPServer(workspace_root=args.workspace)
     server.run_stdio()
 
 

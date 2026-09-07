@@ -1,5 +1,5 @@
 """
-Standalone Headless CLI for Blue Team Agent Security Guardrails.
+Standalone Headless CLI for CookieCyberTeam Security Guardrails.
 Provides command-line interfaces for:
 - scan: SAST security scanning with JSON/SARIF output and threshold exit gating.
 - triage: Air-gapped binary triage and SOC rule evaluation.
@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from core.ast_scanner import ASTScanner
 from core.binary_triage import BinaryTriageEngine
-from core.config import BlueTeamConfig
+from core.config import CookieCyberConfig
 from core.containment import generate_firewall_rule, quarantine_file
 from core.soc_rules import SOCRuleEngine
 
@@ -40,7 +40,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         target_paths = [Path(args.path).resolve()]
 
     repo_hint = target_paths[0] if target_paths else Path.cwd()
-    config = BlueTeamConfig.load_from_repo(repo_hint)
+    config = CookieCyberConfig.load_from_repo(repo_hint)
     scanner = ASTScanner(config=config)
 
     findings: List[Any] = []
@@ -146,7 +146,7 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m core.cli",
-        description="Blue Team Agent Security Guardrails Headless CLI",
+        description="CookieCyberTeam CLI Security Guardrails Headless Interface",
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 

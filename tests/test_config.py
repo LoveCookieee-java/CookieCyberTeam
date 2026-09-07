@@ -1,6 +1,6 @@
 """
 Unit tests for Repository Configuration Engine (core/config.py).
-Tests .blueteam.toml and blueteam.json parsing, fallback handling,
+Tests .cookiecyber.toml and cookiecyber.json parsing, fallback handling,
 and integration with SafePatchManager and ASTScanner.
 """
 
@@ -11,7 +11,7 @@ from pathlib import Path
 
 from core.ast_scanner import ASTScanner
 from core.config import (
-    BlueTeamConfig,
+    CookieCyberConfig,
     DEFAULT_DIFF_CAP_LIMIT,
     DEFAULT_NEW_FILE_CAP_LIMIT,
     DEFAULT_RESTRICTED_BRANCHES,
@@ -22,11 +22,11 @@ from core.config import (
 from core.guardrails import SafePatchManager, GuardrailViolation
 
 
-class TestBlueTeamConfig(unittest.TestCase):
+class TestCookieCyberConfig(unittest.TestCase):
 
     def test_default_config_values(self):
         """Verify standard default configuration values."""
-        cfg = BlueTeamConfig()
+        cfg = CookieCyberConfig()
         self.assertEqual(cfg.diff_cap_limit, 50)
         self.assertEqual(cfg.new_file_cap_limit, 250)
         self.assertIn("main", cfg.restricted_branches)
@@ -37,9 +37,9 @@ class TestBlueTeamConfig(unittest.TestCase):
         self.assertEqual(cfg.cvss_version, "3.1")
 
     def test_load_from_toml_file(self):
-        """Verify parsing configuration from .blueteam.toml."""
+        """Verify parsing configuration from .cookiecyber.toml."""
         toml_content = """
-# Blue Team Repository Configuration
+# CookieCyberTeam Repository Configuration
 diff_cap_limit = 80
 new_file_cap_limit = 400
 restricted_branches = ["main", "staging", "deploy"]
@@ -48,10 +48,10 @@ shannon_entropy_threshold = 7.8
 cvss_version = "4.0"
 """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            toml_path = Path(tmp_dir) / ".blueteam.toml"
+            toml_path = Path(tmp_dir) / ".cookiecyber.toml"
             toml_path.write_text(toml_content, encoding="utf-8")
 
-            cfg = BlueTeamConfig.load_from_file(toml_path)
+            cfg = CookieCyberConfig.load_from_file(toml_path)
             self.assertEqual(cfg.diff_cap_limit, 80)
             self.assertEqual(cfg.new_file_cap_limit, 400)
             self.assertEqual(cfg.restricted_branches, {"main", "staging", "deploy"})
@@ -61,7 +61,7 @@ cvss_version = "4.0"
             self.assertEqual(cfg.config_source, str(toml_path))
 
     def test_load_from_json_file(self):
-        """Verify parsing configuration from blueteam.json."""
+        """Verify parsing configuration from cookiecyber.json."""
         json_data = {
             "diff_cap_limit": 60,
             "new_file_cap_limit": 300,
@@ -71,10 +71,10 @@ cvss_version = "4.0"
             "cvss_version": "3.1",
         }
         with tempfile.TemporaryDirectory() as tmp_dir:
-            json_path = Path(tmp_dir) / "blueteam.json"
+            json_path = Path(tmp_dir) / "cookiecyber.json"
             json_path.write_text(json.dumps(json_data), encoding="utf-8")
 
-            cfg = BlueTeamConfig.load_from_file(json_path)
+            cfg = CookieCyberConfig.load_from_file(json_path)
             self.assertEqual(cfg.diff_cap_limit, 60)
             self.assertEqual(cfg.new_file_cap_limit, 300)
             self.assertIn("production", cfg.restricted_branches)
@@ -82,22 +82,22 @@ cvss_version = "4.0"
             self.assertEqual(cfg.shannon_entropy_threshold, 7.2)
 
     def test_load_from_repo_hierarchy(self):
-        """Verify automatic discovery of .blueteam.toml from nested child directory."""
+        """Verify automatic discovery of .cookiecyber.toml from nested child directory."""
         with tempfile.TemporaryDirectory() as repo_dir:
             repo_path = Path(repo_dir)
-            toml_path = repo_path / ".blueteam.toml"
+            toml_path = repo_path / ".cookiecyber.toml"
             toml_path.write_text("diff_cap_limit = 45\ncvss_version = '4.0'\n", encoding="utf-8")
 
             child_dir = repo_path / "src" / "deeply" / "nested"
             child_dir.mkdir(parents=True, exist_ok=True)
 
-            cfg = BlueTeamConfig.load_from_repo(child_dir)
+            cfg = CookieCyberConfig.load_from_repo(child_dir)
             self.assertEqual(cfg.diff_cap_limit, 45)
             self.assertEqual(cfg.cvss_version, "4.0")
 
     def test_safepatch_manager_config_integration(self):
         """Verify SafePatchManager honors custom diff cap and branch configuration."""
-        custom_cfg = BlueTeamConfig(
+        custom_cfg = CookieCyberConfig(
             diff_cap_limit=20,
             restricted_branches={"trunk", "golden"},
         )
@@ -127,7 +127,7 @@ cvss_version = "4.0"
             src_file = src_dir / "app.py"
             src_file.write_text("import os\ndef run(x): os.system(x)\n", encoding="utf-8")
 
-            custom_cfg = BlueTeamConfig(
+            custom_cfg = CookieCyberConfig(
                 exclude_dirs={"vendor"},
                 cvss_version="4.0",
             )
@@ -157,9 +157,9 @@ cvss_version = "4.0" # modern CVSS standard
 restricted_branches = ["main", "prod"] # production targets
 """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            p = Path(tmp_dir) / ".blueteam.toml"
+            p = Path(tmp_dir) / ".cookiecyber.toml"
             p.write_text(toml_content, encoding="utf-8")
-            cfg = BlueTeamConfig.load_from_file(p)
+            cfg = CookieCyberConfig.load_from_file(p)
             self.assertEqual(cfg.diff_cap_limit, 42)
             self.assertEqual(cfg.cvss_version, "4.0")
             self.assertEqual(cfg.restricted_branches, {"main", "prod"})
@@ -168,25 +168,25 @@ restricted_branches = ["main", "prod"] # production targets
         """Verify load_from_repo correctly resolves parent when passed a file path."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             repo = Path(tmp_dir)
-            cfg_file = repo / ".blueteam.toml"
+            cfg_file = repo / ".cookiecyber.toml"
             cfg_file.write_text("diff_cap_limit = 35\n", encoding="utf-8")
             src_file = repo / "main.py"
             src_file.write_text("print('hello')", encoding="utf-8")
 
-            cfg = BlueTeamConfig.load_from_repo(src_file)
+            cfg = CookieCyberConfig.load_from_repo(src_file)
             self.assertEqual(cfg.diff_cap_limit, 35)
 
-    def test_tool_blueteam_section_support(self):
-        """Verify pyproject-style [tool.blueteam] sections are parsed."""
+    def test_tool_cookiecyber_section_support(self):
+        """Verify pyproject-style [tool.cookiecyber] sections are parsed."""
         toml_content = """
-[tool.blueteam]
+[tool.cookiecyber]
 diff_cap_limit = 25
 cvss_version = "4.0"
 """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            p = Path(tmp_dir) / ".blueteam.toml"
+            p = Path(tmp_dir) / ".cookiecyber.toml"
             p.write_text(toml_content, encoding="utf-8")
-            cfg = BlueTeamConfig.load_from_file(p)
+            cfg = CookieCyberConfig.load_from_file(p)
             self.assertEqual(cfg.diff_cap_limit, 25)
             self.assertEqual(cfg.cvss_version, "4.0")
 
@@ -197,9 +197,9 @@ exclude_dirs = ["vendor,old", "node_modules", 'third, party, libs']
 restricted_branches = ["main", "feature/comma,branch"]
 """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            p = Path(tmp_dir) / ".blueteam.toml"
+            p = Path(tmp_dir) / ".cookiecyber.toml"
             p.write_text(toml_content, encoding="utf-8")
-            cfg = BlueTeamConfig.load_from_file(p)
+            cfg = CookieCyberConfig.load_from_file(p)
             self.assertIn("vendor,old", cfg.exclude_dirs)
             self.assertIn("node_modules", cfg.exclude_dirs)
             self.assertIn("third, party, libs", cfg.exclude_dirs)
@@ -219,9 +219,9 @@ restricted_branches = [
 ]
 """
         with tempfile.TemporaryDirectory() as tmp_dir:
-            p = Path(tmp_dir) / ".blueteam.toml"
+            p = Path(tmp_dir) / ".cookiecyber.toml"
             p.write_text(toml_content, encoding="utf-8")
-            cfg = BlueTeamConfig.load_from_file(p)
+            cfg = CookieCyberConfig.load_from_file(p)
             self.assertIn("vendor", cfg.exclude_dirs)
             self.assertIn("node_modules", cfg.exclude_dirs)
             self.assertIn("custom_cache", cfg.exclude_dirs)

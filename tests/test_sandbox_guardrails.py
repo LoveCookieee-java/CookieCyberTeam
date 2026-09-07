@@ -12,6 +12,12 @@ from core.guardrails import (
     GuardrailViolation,
     SafePatchManager,
     calculate_diff_stats,
+    apply_patch_hunks,
+    apply_unified_diff,
+    resolve_patched_content,
+    check_zero_deletion,
+    check_ponytail_linter,
+    TransactionalPatchSession,
 )
 from core.sandbox_runner import (
     SandboxRunner,
@@ -602,6 +608,360 @@ class TestToolchainIndexer(unittest.TestCase):
                     self.assertEqual(res["duration_sec"], 0.15)
                     self.assertEqual(res["exit_code"], 0)
                     self.assertFalse(res["timed_out"])
+
+
+class TestDualFormatPatchAndZeroDeletion(unittest.TestCase):
+
+    def setUp(self):
+        self.manager = SafePatchManager()
+
+    # --- Hunk JSON & Sliding Window ---
+
+    def test_hunk_sliding_window_exact_match(self):
+        """Hunk matching applies cleanly at exact line position."""
+        orig = "line1\nline2\ntarget\nline4\nline5\n"
+        hunk = {
+            "start_line": 3,
+            "end_line": 3,
+            "target_content": "target\n",
+            "replacement_chunk": "replaced\n",
+        }
+        res = apply_patch_hunks(orig, [hunk])
+        self.assertEqual(res, "line1\nline2\nreplaced\nline4\nline5\n")
+
+    def test_hunk_sliding_window_drift_forward(self):
+        """Hunk matching resolves drift forward (+3 lines within +/-10)."""
+        orig = "hdr1\nhdr2\nhdr3\nline1\nline2\ntarget\nline4\n"
+        hunk = {
+            "start_line": 3,
+            "end_line": 3,
+            "target_content": "target\n",
+            "replacement_chunk": "fixed\n",
+        }
+        res = apply_patch_hunks(orig, [hunk])
+        self.assertIn("fixed\n", res)
+        self.assertNotIn("target\n", res)
+
+    def test_hunk_sliding_window_drift_backward(self):
+        """Hunk matching resolves drift backward (-2 lines within +/-10)."""
+        orig = "target\nline4\nline5\n"
+        hunk = {
+            "start_line": 3,
+            "end_line": 3,
+            "target_content": "target\n",
+            "replacement_chunk": "fixed\n",
+        }
+        res = apply_patch_hunks(orig, [hunk])
+        self.assertEqual(res, "fixed\nline4\nline5\n")
+
+    def test_hunk_whole_file_fallback(self):
+        """Unique target content is matched globally if beyond +/-10 line window."""
+        padding = "".join(f"filler_{i}\n" for i in range(25))
+        orig = f"{padding}unique_token_xyz = 1\nend\n"
+        hunk = {
+            "start_line": 2,
+            "end_line": 2,
+            "target_content": "unique_token_xyz = 1\n",
+            "replacement_chunk": "unique_token_xyz = 999\n",
+        }
+        res = apply_patch_hunks(orig, [hunk])
+        self.assertIn("unique_token_xyz = 999\n", res)
+
+    def test_hunk_unmatched_raises_violation(self):
+        """Unmatched hunk content raises GuardrailViolation."""
+        orig = "line1\nline2\nline3\n"
+        hunk = {
+            "start_line": 1,
+            "end_line": 1,
+            "target_content": "nonexistent_content\n",
+            "replacement_chunk": "new\n",
+        }
+        with self.assertRaises(GuardrailViolation) as ctx:
+            apply_patch_hunks(orig, [hunk])
+        self.assertEqual(ctx.exception.gate_name, "Dual-Format Patch Engine")
+
+    def test_hunk_multiple_hunks_sorted_reverse(self):
+        """Multiple hunks are applied safely without shifting earlier hunk indices."""
+        orig = "line1\nline2\nline3\nline4\nline5\n"
+        hunks = [
+            {"start_line": 2, "end_line": 2, "target_content": "line2\n", "replacement_chunk": "L2_FIX\n"},
+            {"start_line": 4, "end_line": 4, "target_content": "line4\n", "replacement_chunk": "L4_FIX\n"},
+        ]
+        res = apply_patch_hunks(orig, hunks)
+        self.assertEqual(res, "line1\nL2_FIX\nline3\nL4_FIX\nline5\n")
+
+    # --- Unified Diff Engine ---
+
+    def test_unified_diff_single_hunk(self):
+        """Single unified diff hunk applies additions and deletions."""
+        orig = "alpha\nbeta\ngamma\n"
+        diff = "--- a/test.py\n+++ b/test.py\n@@ -2,1 +2,1 @@\n-beta\n+beta_fixed\n"
+        res = apply_unified_diff(orig, diff)
+        self.assertEqual(res, "alpha\nbeta_fixed\ngamma\n")
+
+    def test_unified_diff_multi_hunk_with_add_and_delete(self):
+        """Multiple unified diff hunks correctly alter distinct regions."""
+        orig = "line1\nline2\nline3\nline4\nline5\n"
+        diff = (
+            "--- a/file.py\n+++ b/file.py\n"
+            "@@ -1,1 +1,1 @@\n-line1\n+first_line\n"
+            "@@ -5,1 +5,1 @@\n-line5\n+last_line\n"
+        )
+        res = apply_unified_diff(orig, diff)
+        self.assertIn("first_line\n", res)
+        self.assertIn("last_line\n", res)
+        self.assertIn("line3\n", res)
+
+    def test_unified_diff_invalid_syntax_rejected(self):
+        """Unified diff without hunk headers raises GuardrailViolation."""
+        orig = "line1\nline2\n"
+        diff = "some invalid text without diff headers"
+        with self.assertRaises(GuardrailViolation):
+            apply_unified_diff(orig, diff)
+
+    def test_resolve_patched_content_auto_detect_diff(self):
+        """resolve_patched_content automatically detects unified diff format."""
+        orig = "a = 1\nb = 2\n"
+        diff = "--- a/x.py\n+++ b/x.py\n@@ -2,1 +2,1 @@\n-b = 2\n+b = 200\n"
+        res = resolve_patched_content(orig, patched_content=diff)
+        self.assertEqual(res, "a = 1\nb = 200\n")
+
+    def test_resolve_patched_content_missing_payload_raises(self):
+        """resolve_patched_content raises when no payload is provided."""
+        with self.assertRaises(GuardrailViolation):
+            resolve_patched_content("orig")
+
+    # --- Gate 1.5 Ponytail Linter ---
+
+    def test_gate_1_5_ponytail_dead_code_function_rejected(self):
+        """Gate 1.5 rejects newly defined functions that have no callers or exports."""
+        orig = "def main():\n    return 42\n"
+        patched = "def main():\n    return 42\n\ndef uncalled_dead_function():\n    return 0\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            check_ponytail_linter(orig, patched, file_path="service.py")
+        self.assertIn("Gate 1.5 Ponytail Linter", ctx.exception.gate_name)
+        self.assertIn("Dead code detected", ctx.exception.message)
+
+    def test_gate_1_5_ponytail_dead_code_class_rejected(self):
+        """Gate 1.5 rejects unreferenced classes."""
+        orig = "x = 1\n"
+        patched = "x = 1\n\nclass UnusedHelperClass:\n    pass\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            check_ponytail_linter(orig, patched, file_path="module.py")
+        self.assertIn("UnusedHelperClass", ctx.exception.message)
+
+    def test_gate_1_5_ponytail_dead_code_whitelisted_by_all_export(self):
+        """Gate 1.5 permits newly added symbols exported in __all__."""
+        orig = "__all__ = ['old_func']\ndef old_func(): pass\n"
+        patched = "__all__ = ['old_func', 'exported_api']\ndef old_func(): pass\ndef exported_api(): pass\n"
+        # Should not raise
+        check_ponytail_linter(orig, patched, file_path="api.py")
+
+    def test_gate_1_5_ponytail_dead_code_referenced_internally_allowed(self):
+        """Gate 1.5 permits newly added functions referenced elsewhere in module."""
+        orig = "def run(): pass\n"
+        patched = "def helper(): return 1\ndef run(): return helper()\n"
+        # Should not raise
+        check_ponytail_linter(orig, patched, file_path="logic.py")
+
+    def test_gate_1_5_ponytail_dead_code_ignored_in_test_files(self):
+        """Gate 1.5 skips dead-code checking in test files and test directories."""
+        orig = ""
+        patched = "def test_helper(): pass\n"
+        # Should not raise for test file
+        check_ponytail_linter(orig, patched, file_path="tests/test_something.py")
+        check_ponytail_linter(orig, patched, file_path="test_unit.py")
+
+    def test_gate_1_5_ponytail_stdlib_priority_requests_rejected(self):
+        """Gate 1.5 rejects importing requests when urllib.request is standard library equivalent."""
+        orig = ""
+        patched = "import requests\nresp = requests.get('https://example.com')\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            check_ponytail_linter(orig, patched, file_path="client.py")
+        self.assertIn("urllib.request", ctx.exception.message)
+
+    def test_gate_1_5_ponytail_stdlib_priority_pytz_rejected(self):
+        """Gate 1.5 rejects importing pytz when zoneinfo is standard library equivalent."""
+        orig = ""
+        patched = "import pytz\ntz = pytz.UTC\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            check_ponytail_linter(orig, patched, file_path="utils.py")
+        self.assertIn("zoneinfo", ctx.exception.message)
+
+    def test_gate_1_5_ponytail_stdlib_priority_mock_rejected(self):
+        """Gate 1.5 rejects importing 3rd-party mock when unittest.mock is available."""
+        orig = ""
+        patched = "from mock import MagicMock\nm = MagicMock()\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            check_ponytail_linter(orig, patched, file_path="service.py")
+        self.assertIn("unittest.mock", ctx.exception.message)
+
+    def test_gate_1_5_ponytail_stdlib_allowed_when_listed_in_requirements(self):
+        """Gate 1.5 permits 3rd-party library when declared in project requirements.txt."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            req_file = Path(tmp_dir) / "requirements.txt"
+            req_file.write_text("requests>=2.28.0\n", encoding="utf-8")
+            src_file = Path(tmp_dir) / "client.py"
+
+            orig = ""
+            patched = "import requests\nresp = requests.get('https://api.test')\n"
+            # Should not raise because requests is in requirements.txt
+            check_ponytail_linter(orig, patched, file_path=str(src_file), repo_path=tmp_dir)
+
+    # --- Gate 4 Zero-Deletion Invariant ---
+
+    def test_gate_4_zero_deletion_os_remove_rejected(self):
+        """Gate 4 strictly rejects os.remove()."""
+        with self.assertRaises(GuardrailViolation) as ctx:
+            check_zero_deletion("os.remove('file.txt')")
+        self.assertEqual(ctx.exception.gate_name, "Gate 4 Zero-Deletion Invariant")
+
+    def test_gate_4_zero_deletion_os_unlink_rejected(self):
+        """Gate 4 strictly rejects os.unlink()."""
+        with self.assertRaises(GuardrailViolation):
+            check_zero_deletion("os.unlink('db.sqlite')")
+
+    def test_gate_4_zero_deletion_shutil_rmtree_rejected(self):
+        """Gate 4 strictly rejects shutil.rmtree()."""
+        with self.assertRaises(GuardrailViolation):
+            check_zero_deletion("shutil.rmtree('/tmp/dir')")
+
+    def test_gate_4_zero_deletion_os_rmdir_rejected(self):
+        """Gate 4 strictly rejects os.rmdir()."""
+        with self.assertRaises(GuardrailViolation):
+            check_zero_deletion("os.rmdir('old_folder')")
+
+    def test_gate_4_zero_deletion_path_unlink_rejected(self):
+        """Gate 4 strictly rejects Path.unlink()."""
+        with self.assertRaises(GuardrailViolation):
+            check_zero_deletion("Path('file.txt').unlink()")
+
+    def test_gate_4_zero_deletion_path_rmdir_rejected(self):
+        """Gate 4 strictly rejects Path.rmdir()."""
+        with self.assertRaises(GuardrailViolation):
+            check_zero_deletion("p.rmdir()")
+
+    def test_gate_4_zero_deletion_shell_rm_rf_rejected(self):
+        """Gate 4 strictly rejects shell deletion commands (rm -rf, del, Remove-Item)."""
+        with self.assertRaises(GuardrailViolation):
+            check_zero_deletion("cmd = 'rm -rf /data'")
+
+    def test_gate_4_zero_deletion_inert_relocation_allowed(self):
+        """Gate 4 permits safe containment relocation without deletion primitives."""
+        # Moving or renaming to quarantine is safe
+        code = "shutil.move('threat.exe', '.quarantine/threat.exe.vault')"
+        check_zero_deletion(code)
+
+    # --- Surgical Preview & Dry-Run ---
+
+    def test_preview_surgical_patch_dry_run_does_not_modify_disk(self):
+        """preview_surgical_patch validates gates and diff without touching disk file."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "app.py"
+            target.write_text("x = 10\n", encoding="utf-8")
+
+            res = self.manager.preview_surgical_patch(
+                target_file_path=target,
+                patched_content="x = 20\n",
+                task_id="preview-test",
+            )
+            self.assertTrue(res["success"])
+            self.assertTrue(res["preview_mode"])
+            self.assertEqual(len(res["gates_passed"]), 6)
+            self.assertEqual(res["diff_stats"]["total_changed"], 2)
+            # Original file on disk must be completely unchanged
+            self.assertEqual(target.read_text(encoding="utf-8"), "x = 10\n")
+
+    def test_preview_surgical_patch_hunk_format(self):
+        """preview_surgical_patch supports Hunk JSON format."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "app.py"
+            target.write_text("def run():\n    return False\n", encoding="utf-8")
+
+            hunk = {
+                "start_line": 2,
+                "end_line": 2,
+                "target_content": "    return False\n",
+                "replacement_chunk": "    return True\n",
+            }
+            res = self.manager.preview_surgical_patch(
+                target_file_path=target,
+                hunks=[hunk],
+                task_id="preview-hunk",
+            )
+            self.assertTrue(res["success"])
+            self.assertTrue(res["preview_mode"])
+            self.assertIn("+    return True", res["diff_stats"]["diff_text"])
+
+    def test_preview_surgical_patch_unified_diff_format(self):
+        """preview_surgical_patch supports Unified Diff format."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "calc.py"
+            target.write_text("result = 1\n", encoding="utf-8")
+
+            diff = "--- a/calc.py\n+++ b/calc.py\n@@ -1,1 +1,1 @@\n-result = 1\n+result = 100\n"
+            res = self.manager.preview_surgical_patch(
+                target_file_path=target,
+                unified_diff=diff,
+                task_id="preview-diff",
+            )
+            self.assertTrue(res["success"])
+            self.assertTrue(res["preview_mode"])
+            self.assertIn("+result = 100", res["diff_stats"]["diff_text"])
+
+    # --- Transactional Patch Session ---
+
+    def test_transactional_patch_session_success_commits(self):
+        """TransactionalPatchSession commits changes when verification passes."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "service.py"
+            target.write_text("INITIAL = True\n", encoding="utf-8")
+
+            with TransactionalPatchSession(target) as session:
+                target.write_text("PATCHED = True\n", encoding="utf-8")
+                passed = session.verify_and_commit(lambda: True)
+                self.assertTrue(passed)
+
+            self.assertEqual(target.read_text(encoding="utf-8"), "PATCHED = True\n")
+
+    def test_transactional_patch_session_callable_failure_auto_rollback(self):
+        """TransactionalPatchSession rolls back to original content if verification fails."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "service.py"
+            target.write_text("INITIAL = True\n", encoding="utf-8")
+
+            with TransactionalPatchSession(target) as session:
+                target.write_text("BROKEN_CODE = True\n", encoding="utf-8")
+                passed = session.verify_and_commit(lambda: False)
+                self.assertFalse(passed)
+
+            # Rolled back
+            self.assertEqual(target.read_text(encoding="utf-8"), "INITIAL = True\n")
+
+    def test_transactional_patch_session_exception_auto_rollback(self):
+        """TransactionalPatchSession rolls back when an exception occurs inside context."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "service.py"
+            target.write_text("ORIGINAL\n", encoding="utf-8")
+
+            with self.assertRaises(ValueError):
+                with TransactionalPatchSession(target) as session:
+                    target.write_text("CRASHED\n", encoding="utf-8")
+                    raise ValueError("Simulated test runner failure")
+
+            # Rolled back
+            self.assertEqual(target.read_text(encoding="utf-8"), "ORIGINAL\n")
+
+    def test_transactional_patch_session_new_file_rollback_removes_file(self):
+        """TransactionalPatchSession removes newly created file on rollback."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            new_file = Path(tmp_dir) / "new_module.py"
+
+            with TransactionalPatchSession(new_file) as session:
+                new_file.write_text("print('hello')\n", encoding="utf-8")
+                session.rollback()
+
+            self.assertFalse(new_file.exists())
 
 
 if __name__ == "__main__":

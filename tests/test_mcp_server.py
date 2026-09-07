@@ -1,19 +1,19 @@
 """
-Unit tests for Blue Team MCP Server JSON-RPC protocol & Tool dispatching.
-Tests all 7 Tools, 6 Resources, 6 Prompts, Mailbox routing, Code Search, and Binary Triage.
+Unit tests for CookieCyberTeam MCP Server JSON-RPC protocol & Tool dispatching.
+Tests all 16 Tools, 8 Resources, 6 Prompts, Mailbox routing, Code Search, and Binary Triage.
 """
 
 import json
 import tempfile
 import unittest
 from pathlib import Path
-from server import BlueTeamMCPServer
+from server import CookieCyberMCPServer
 
 
 class TestMCPServer(unittest.TestCase):
 
     def setUp(self):
-        self.server = BlueTeamMCPServer(db_path=":memory:")
+        self.server = CookieCyberMCPServer(db_path=":memory:")
 
     def test_initialize_handshake(self):
         """Verify initialize RPC response adheres to MCP protocol."""
@@ -22,19 +22,22 @@ class TestMCPServer(unittest.TestCase):
         self.assertEqual(resp["id"], 101)
         res = resp["result"]
         self.assertEqual(res["protocolVersion"], "2024-11-05")
-        self.assertEqual(res["serverInfo"]["name"], "blue-team-security-guardrails")
+        self.assertEqual(res["serverInfo"]["name"], "cookie-cyber-team")
 
-    def test_tools_list_all_eleven(self):
-        """Verify all 11 core tools are registered."""
+    def test_tools_list_all_sixteen(self):
+        """Verify all 16 core tools are registered."""
         req = {"jsonrpc": "2.0", "id": 102, "method": "tools/list", "params": {}}
         resp = self.server.handle_request(req)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 11)
+        self.assertEqual(len(tools), 16)
         tool_names = {t["name"] for t in tools}
         expected = {
+            "mcp_adaptive_guide",
             "mcp_scan_vulnerabilities",
+            "mcp_audit_dependencies",
             "mcp_execute_sandbox_test",
             "mcp_create_reproduction_test",
+            "mcp_preview_surgical_patch",
             "mcp_apply_safe_patch",
             "mcp_orchestrate_dag",
             "mcp_search_code",
@@ -42,16 +45,18 @@ class TestMCPServer(unittest.TestCase):
             "mcp_run_diagnostic_tool",
             "mcp_submit_dynamic_sandbox",
             "mcp_quarantine_artifact",
+            "mcp_restore_quarantined_file",
             "mcp_generate_containment_rule",
+            "mcp_terminate_process",
         }
         self.assertEqual(tool_names, expected)
 
-    def test_resources_list_and_read_all_six(self):
-        """Verify all 6 resources are registered and readable."""
+    def test_resources_list_and_read_all_eight(self):
+        """Verify all 8 resources are registered and readable."""
         req = {"jsonrpc": "2.0", "id": 103, "method": "resources/list", "params": {}}
         resp = self.server.handle_request(req)
         resources = resp["result"]["resources"]
-        self.assertEqual(len(resources), 6)
+        self.assertEqual(len(resources), 8)
         uris = {r["uri"] for r in resources}
         expected_uris = {
             "mcp://rules/security-standards",
@@ -60,6 +65,8 @@ class TestMCPServer(unittest.TestCase):
             "mcp://state/tool-index",
             "mcp://playbooks/malware-triage",
             "mcp://playbooks/compromise-assessment",
+            "mcp://context/project-genome",
+            "mcp://rules/active-guardrails",
         }
         self.assertEqual(uris, expected_uris)
 
@@ -137,7 +144,7 @@ class TestMCPServer(unittest.TestCase):
     def test_tool_call_create_reproduction_test(self):
         """Verify mcp_create_reproduction_test writes and runs test within isolated workspace."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmpdir)
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=tmpdir)
             test_file = Path(tmpdir) / "tests" / "repro" / "test_repro.py"
             failing_test_code = (
                 "import unittest\n"
@@ -219,7 +226,7 @@ class TestMCPServer(unittest.TestCase):
     def test_tool_call_apply_safe_patch_single_committer_token_validation(self):
         """Verify mcp_apply_safe_patch enforces single-committer session tokens issued via DAG pipeline."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmpdir)
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=tmpdir)
             test_file = Path(tmpdir) / "app.py"
             test_file.write_text("x = 10\n", encoding="utf-8")
 
@@ -305,7 +312,7 @@ class TestMCPServer(unittest.TestCase):
     def test_tool_call_apply_safe_patch_blocks_absolute_and_relative_path_traversal(self):
         """Verify mcp_apply_safe_patch strictly rejects both relative and absolute paths outside workspace root."""
         with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as outside_dir:
-            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=ws_dir)
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=ws_dir)
             outside_target = Path(outside_dir) / "escaped.py"
 
             # 1. Absolute path outside workspace root
@@ -351,7 +358,7 @@ class TestMCPServer(unittest.TestCase):
     def test_tool_call_apply_safe_patch_rejects_without_token_at_startup(self):
         """Verify mcp_apply_safe_patch rejects unauthenticated commits at server startup before any pipeline."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmpdir)
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=tmpdir)
             test_file = Path(tmpdir) / "startup_test.py"
             test_file.write_text("v = 1\n", encoding="utf-8")
 
@@ -704,7 +711,7 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("sarif", payload)
         sarif = payload["sarif"]
         self.assertEqual(sarif["version"], "2.1.0")
-        self.assertEqual(sarif["runs"][0]["tool"]["driver"]["name"], "BlueTeam-AST-Scanner")
+        self.assertEqual(sarif["runs"][0]["tool"]["driver"]["name"], "CookieCyberTeam-AST-Scanner")
         self.assertEqual(len(sarif["runs"][0]["results"]), 1)
         self.assertEqual(sarif["runs"][0]["results"][0]["ruleId"], "CWE-78")
 
@@ -819,7 +826,7 @@ class TestMCPServer(unittest.TestCase):
     def test_quarantine_artifact_tool_jsonrpc(self):
         """Verify mcp_quarantine_artifact via JSON-RPC executes safely."""
         with tempfile.TemporaryDirectory() as tmp_dir:
-            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmp_dir)
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=tmp_dir)
             sample = Path(tmp_dir) / "suspicious_trojan.exe"
             sample.write_bytes(b"MALWARE_PAYLOAD_TEST_12345")
 
@@ -869,7 +876,7 @@ class TestMCPServer(unittest.TestCase):
             f = ws / "clean_mod.py"
             f.write_text("def ping(): pass\n", encoding="utf-8")
 
-            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=ws)
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=ws)
             req = {
                 "jsonrpc": "2.0",
                 "id": 403,

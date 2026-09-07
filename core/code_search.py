@@ -33,6 +33,31 @@ class CodeChunk:
         return asdict(self)
 
 
+PROGRAMMING_STOPWORDS = {
+    "def", "class", "self", "return", "import", "from", "for", "if", "else", "elif",
+    "in", "and", "or", "not", "as", "none", "true", "false", "try", "except", "finally",
+    "with", "async", "await", "lambda", "yield", "pass", "raise", "while", "break", "continue",
+}
+
+
+def tokenize_identifier(identifier: str) -> List[str]:
+    """Tokenize camelCase, PascalCase, and snake_case identifiers into semantic sub-words."""
+    parts = identifier.split("_")
+    tokens = []
+    for part in parts:
+        subparts = re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?=[A-Z][a-z]|\b)", part)
+        if subparts:
+            tokens.extend(subparts)
+        elif part:
+            tokens.append(part)
+    return [t.lower() for t in tokens if t]
+
+
+def filter_stopwords(tokens: List[str]) -> List[str]:
+    """Filter out common syntax stopwords from search tokens."""
+    return [t for t in tokens if t.lower() not in PROGRAMMING_STOPWORDS]
+
+
 class ASTCodeChunker:
     """Parses source code into syntactic AST chunks (classes and functions)."""
 
@@ -42,7 +67,7 @@ class ASTCodeChunker:
         return max(1, len(text) // 4)
 
     def chunk_code(self, code_str: str, file_path: str = "<memory>") -> List[CodeChunk]:
-        """Parse code into syntactic function/class chunks."""
+        """Parse code into hierarchical syntactic function/class chunks."""
         chunks: List[CodeChunk] = []
         lines = code_str.splitlines(keepends=True)
 
@@ -69,22 +94,13 @@ class ASTCodeChunker:
                 ))
             return chunks
 
-        for node in ast.walk(tree):
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 start_line = getattr(node, "lineno", 1)
                 end_line = getattr(node, "end_lineno", start_line)
-                
-                # Extract snippet lines
-                snippet_lines = lines[start_line - 1:end_line]
-                snippet = "".join(snippet_lines)
-                
-                # Extract docstring if present
+                snippet = "".join(lines[start_line - 1:end_line])
                 doc = ast.get_docstring(node) or ""
-                
-                chunk_type = "class" if isinstance(node, ast.ClassDef) else (
-                    "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
-                )
-                
+                chunk_type = "async_function" if isinstance(node, ast.AsyncFunctionDef) else "function"
                 chunk_id = f"{Path(file_path).name}::{node.name}:{start_line}"
                 chunks.append(CodeChunk(
                     chunk_id=chunk_id,
@@ -97,6 +113,46 @@ class ASTCodeChunker:
                     docstring=doc,
                     token_count_est=self.estimate_tokens(snippet),
                 ))
+            elif isinstance(node, ast.ClassDef):
+                start_line = getattr(node, "lineno", 1)
+                doc = ast.get_docstring(node) or ""
+                first_method_line = None
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        first_method_line = getattr(item, "lineno", None)
+                        break
+                header_end = (first_method_line - 1) if first_method_line and first_method_line > start_line else getattr(node, "end_lineno", start_line)
+                header_snippet = "".join(lines[start_line - 1:min(header_end, start_line + 5)])
+                chunk_id = f"{Path(file_path).name}::{node.name}:{start_line}"
+                chunks.append(CodeChunk(
+                    chunk_id=chunk_id,
+                    name=node.name,
+                    chunk_type="class",
+                    file_path=str(file_path),
+                    start_line=start_line,
+                    end_line=header_end,
+                    content=header_snippet,
+                    docstring=doc,
+                    token_count_est=self.estimate_tokens(header_snippet),
+                ))
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        m_start = getattr(item, "lineno", start_line)
+                        m_end = getattr(item, "end_lineno", m_start)
+                        m_snippet = "".join(lines[m_start - 1:m_end])
+                        m_doc = ast.get_docstring(item) or ""
+                        m_type = "async_function" if isinstance(item, ast.AsyncFunctionDef) else "function"
+                        chunks.append(CodeChunk(
+                            chunk_id=f"{Path(file_path).name}::{node.name}.{item.name}:{m_start}",
+                            name=item.name,
+                            chunk_type=m_type,
+                            file_path=str(file_path),
+                            start_line=m_start,
+                            end_line=m_end,
+                            content=m_snippet,
+                            docstring=m_doc,
+                            token_count_est=self.estimate_tokens(m_snippet),
+                        ))
 
         # If no functions or classes were found, return the entire file as a single module chunk
         if not chunks and lines:
@@ -401,14 +457,20 @@ class FTS5BM25Searcher:
 
         if self.fts5_supported:
             try:
-                # Quote each token to prevent FTS5 operator syntax collisions (e.g. AND, OR, NOT)
                 tokens = clean_q.split()
-                fts_query = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in tokens)
+                expanded = []
+                for t in tokens:
+                    expanded.append(t)
+                    for sub in tokenize_identifier(t):
+                        if sub not in expanded:
+                            expanded.append(sub)
+                filtered = filter_stopwords(expanded) or expanded
+                fts_query = " OR ".join(f'"{t.replace(chr(34), "")}"' for t in filtered)
                 cursor = self.conn.execute(
                     """
                     SELECT chunk_id, file_path, name, chunk_type, content, docstring,
                            start_line, end_line, token_count,
-                           bm25(code_chunks_fts) as score
+                           bm25(code_chunks_fts, 10.0, 1.0, 2.0) as score
                     FROM code_chunks_fts
                     WHERE code_chunks_fts MATCH ?
                     ORDER BY score ASC
@@ -574,9 +636,11 @@ class HybridCodeSearch:
         target_path: str | Path,
         top_k: int = 5,
         extensions: Optional[Tuple[str, ...]] = None,
+        mode: str = "full",
     ) -> Dict[str, Any]:
         """
         Execute search returning concise AST chunks (< 100 tokens each).
+        Supports mode='full' (default), mode='skeleton' (signatures), mode='compact' (cleaned).
         """
         target = Path(target_path).resolve()
         if not target.exists():
@@ -623,11 +687,23 @@ class HybridCodeSearch:
         final_results = []
         for cid in ranked_chunk_ids:
             item = chunk_map[cid]
-            # Ponytail / CookieGli token economy: truncate snippet to <= 25 lines if massive
             snippet = item["content"]
-            snip_lines = snippet.splitlines()
-            if len(snip_lines) > 25:
-                snippet = "\n".join(snip_lines[:25]) + f"\n... [truncated {len(snip_lines) - 25} lines for token economy]"
+
+            if mode == "skeleton":
+                # Skeleton mode: return signature line and docstring (~20 tokens)
+                non_empty = [l for l in snippet.splitlines() if l.strip()]
+                sig = non_empty[0] if non_empty else ""
+                doc = f'    """{item["docstring"]}"""' if item.get("docstring") else ""
+                snippet = f"{sig}\n{doc}".strip()
+            elif mode == "compact":
+                # Compact mode: strip comment lines and blank lines
+                compact_lines = [l for l in snippet.splitlines() if l.strip() and not l.strip().startswith("#")]
+                snippet = "\n".join(compact_lines[:20])
+            else:
+                # Ponytail / CookieGli token economy: truncate snippet to <= 25 lines if massive
+                snip_lines = snippet.splitlines()
+                if len(snip_lines) > 25:
+                    snippet = "\n".join(snip_lines[:25]) + f"\n... [truncated {len(snip_lines) - 25} lines for token economy]"
 
             final_results.append({
                 "chunk_id": item["chunk_id"],

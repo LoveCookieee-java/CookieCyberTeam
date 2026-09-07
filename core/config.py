@@ -1,6 +1,6 @@
 """
-Blue Team Repository Configuration Engine.
-Loads repository-level settings from `.blueteam.toml` or `blueteam.json`.
+CookieCyberTeam Repository Configuration Engine.
+Loads repository-level settings from `.cookiecyber.toml` or `cookiecyber.json`.
 Zero external dependencies (supports Python stdlib tomllib / tomli or pure-Python fallback).
 """
 
@@ -198,7 +198,7 @@ def _parse_toml_value(val_str: str) -> Any:
 
 
 @dataclass
-class BlueTeamConfig:
+class CookieCyberConfig:
     """Repository configuration model with defaults and file persistence."""
     diff_cap_limit: int = DEFAULT_DIFF_CAP_LIMIT
     new_file_cap_limit: int = DEFAULT_NEW_FILE_CAP_LIMIT
@@ -237,20 +237,20 @@ class BlueTeamConfig:
         }
 
     @classmethod
-    def load_from_dict(cls, data: Dict[str, Any], source: Optional[str] = None) -> BlueTeamConfig:
-        """Create a BlueTeamConfig instance from dictionary data."""
+    def load_from_dict(cls, data: Dict[str, Any], source: Optional[str] = None) -> CookieCyberConfig:
+        """Create a CookieCyberConfig instance from dictionary data."""
         config_data = dict(data)
-        # Flatten nested sections like [blueteam], [guardrails], or [tool.blueteam]
-        if "blueteam" in config_data and isinstance(config_data["blueteam"], dict):
-            for k, v in config_data["blueteam"].items():
+        # Flatten nested sections like [cookiecyber], [guardrails], or [tool.cookiecyber]
+        if "cookiecyber" in config_data and isinstance(config_data["cookiecyber"], dict):
+            for k, v in config_data["cookiecyber"].items():
                 config_data.setdefault(k, v)
         if "guardrails" in config_data and isinstance(config_data["guardrails"], dict):
             for k, v in config_data["guardrails"].items():
                 config_data.setdefault(k, v)
         if "tool" in config_data and isinstance(config_data["tool"], dict):
             tool_dict = config_data["tool"]
-            if "blueteam" in tool_dict and isinstance(tool_dict["blueteam"], dict):
-                for k, v in tool_dict["blueteam"].items():
+            if "cookiecyber" in tool_dict and isinstance(tool_dict["cookiecyber"], dict):
+                for k, v in tool_dict["cookiecyber"].items():
                     config_data.setdefault(k, v)
 
         return cls(
@@ -264,7 +264,7 @@ class BlueTeamConfig:
         )
 
     @classmethod
-    def load_from_file(cls, file_path: Union[str, Path]) -> BlueTeamConfig:
+    def load_from_file(cls, file_path: Union[str, Path]) -> CookieCyberConfig:
         """Load configuration from a TOML or JSON file."""
         p = Path(file_path).resolve()
         if not p.is_file():
@@ -295,11 +295,11 @@ class BlueTeamConfig:
         return cls.load_from_dict(data, source=str(p))
 
     @classmethod
-    def load_from_repo(cls, repo_path: Optional[Union[str, Path]] = None) -> BlueTeamConfig:
+    def load_from_repo(cls, repo_path: Optional[Union[str, Path]] = None) -> CookieCyberConfig:
         """
-        Discover and load `.blueteam.toml` or `blueteam.json` starting at repo_path.
+        Discover and load `.cookiecyber.toml` or `cookiecyber.json` starting at repo_path.
         If not found, searches parent directories until filesystem root.
-        If no configuration file is located, returns default BlueTeamConfig.
+        If no configuration file is located, returns default CookieCyberConfig.
         """
         start = Path(repo_path).resolve() if repo_path else Path.cwd().resolve()
         if start.is_file():
@@ -307,21 +307,21 @@ class BlueTeamConfig:
         candidates = [start, *start.parents]
 
         for directory in candidates:
-            # Check for .blueteam.toml
-            toml_path = directory / ".blueteam.toml"
+            # Check for .cookiecyber.toml
+            toml_path = directory / ".cookiecyber.toml"
             if toml_path.is_file():
                 return cls.load_from_file(toml_path)
 
-            alt_toml = directory / "blueteam.toml"
+            alt_toml = directory / "cookiecyber.toml"
             if alt_toml.is_file():
                 return cls.load_from_file(alt_toml)
 
-            # Check for blueteam.json
-            json_path = directory / "blueteam.json"
+            # Check for cookiecyber.json
+            json_path = directory / "cookiecyber.json"
             if json_path.is_file():
                 return cls.load_from_file(json_path)
 
-            alt_json = directory / ".blueteam.json"
+            alt_json = directory / ".cookiecyber.json"
             if alt_json.is_file():
                 return cls.load_from_file(alt_json)
 

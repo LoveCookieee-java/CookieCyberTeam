@@ -1,4 +1,4 @@
-# BlueTeamAgent Guidelines & Knowledge Evolution
+# CookieCyberTeam Guidelines & Knowledge Evolution
 
 <!-- darwin:learnings:start -->
 ### 🧬 Darwin Learned Patterns & Best Practices

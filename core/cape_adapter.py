@@ -257,7 +257,7 @@ class CapeSandboxAdapter:
 
         headers = {
             "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "User-Agent": "BlueTeamAgent-CAPEAdapter/1.2",
+            "User-Agent": "CookieCyberTeam-CAPEAdapter/1.0",
         }
         if self.api_key:
             headers["Authorization"] = f"Token {self.api_key}"
@@ -312,7 +312,7 @@ class CapeSandboxAdapter:
     def _poll_task_status(self, task_id: Union[int, str]) -> Dict[str, Any]:
         """Query /api/v2/tasks/view/{task_id}/ or /tasks/status/{task_id}/ for execution state."""
         endpoint = f"{self.api_url}/api/v2/tasks/view/{task_id}/"
-        headers = {"User-Agent": "BlueTeamAgent-CAPEAdapter/1.2"}
+        headers = {"User-Agent": "CookieCyberTeam-CAPEAdapter/1.0"}
         if self.api_key:
             headers["Authorization"] = f"Token {self.api_key}"
 
@@ -342,7 +342,7 @@ class CapeSandboxAdapter:
     def _fetch_report(self, task_id: Union[int, str], target: Path) -> Dict[str, Any]:
         """Retrieve full JSON report from /api/v2/tasks/get/report/{task_id}/ and synthesize IOCs."""
         endpoint = f"{self.api_url}/api/v2/tasks/get/report/{task_id}/"
-        headers = {"User-Agent": "BlueTeamAgent-CAPEAdapter/1.2"}
+        headers = {"User-Agent": "CookieCyberTeam-CAPEAdapter/1.0"}
         if self.api_key:
             headers["Authorization"] = f"Token {self.api_key}"
 

@@ -284,7 +284,7 @@ def generate_firewall_rule(
             return {"success": False, "error": f"Invalid port parameter: {port}"}
 
     clean_target = re.sub(r"[^\w.]", "_", target)
-    rule_label = f"BlueTeam_{action_norm.upper()}_{clean_target}"
+    rule_label = f"CookieCyber_{action_norm.upper()}_{clean_target}"
 
     # 1. Windows Defender Firewall (netsh advfirewall)
     if port:

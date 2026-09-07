@@ -1,0 +1,16 @@
+# CookieCyberTeam Configuration
+[cookiecyber]
+diff_cap_limit = 50
+new_file_cap_limit = 250
+restricted_branches = ["main", "master", "prod", "production", "release"]
+exclude_dirs = ["vendor", "node_modules", ".git", "dist", "build", "__pycache__", ".venv", "venv"]
+shannon_entropy_threshold = 7.5
+cvss_version = "3.1"
+
+[cookiecyber.guardrails]
+enforce_single_committer = true
+gate_diff_cap = true
+gate_zero_regression = true
+gate_branch_isolation = true
+gate_ponytail_linter = true
+gate_zero_deletion = true

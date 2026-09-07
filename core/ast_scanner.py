@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from core.config import (
-    BlueTeamConfig,
+    CookieCyberConfig,
     DEFAULT_EXCLUDE_DIRS,
     DEFAULT_SHANNON_ENTROPY_THRESHOLD,
     DEFAULT_CVSS_VERSION,
@@ -86,6 +86,46 @@ class Finding:
         }
 
 
+class CallGraphVisitor(ast.NodeVisitor):
+    """Pass 1: Pre-computes call graph and function taint contracts across the module."""
+
+    def __init__(self):
+        self.contracts: Dict[str, Dict[str, Any]] = {}
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._analyze_function(node)
+        self.generic_visit(node)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._analyze_function(node)
+        self.generic_visit(node)
+
+    def _analyze_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        params = [arg.arg for arg in getattr(node.args, "posonlyargs", []) + node.args.args]
+        returns_args: Set[int] = set()
+        sink_args: Set[int] = set()
+
+        for sub in ast.walk(node):
+            if isinstance(sub, ast.Return) and sub.value:
+                for idx, p in enumerate(params):
+                    for r_node in ast.walk(sub.value):
+                        if isinstance(r_node, ast.Name) and r_node.id == p:
+                            returns_args.add(idx)
+
+            if isinstance(sub, ast.Call):
+                for idx, p in enumerate(params):
+                    for a in sub.args:
+                        for a_node in ast.walk(a):
+                            if isinstance(a_node, ast.Name) and a_node.id == p:
+                                sink_args.add(idx)
+
+        self.contracts[node.name] = {
+            "params": params,
+            "returns_args": returns_args,
+            "sink_args": sink_args,
+        }
+
+
 class ASTScannerVisitor(ast.NodeVisitor):
     """
     AST Visitor implementing deep security checks with alias resolution
@@ -118,6 +158,12 @@ class ASTScannerVisitor(ast.NodeVisitor):
         self.scope_stack: List[Dict[str, Optional[str]]] = [{}]
         self.global_vars_stack: List[Set[str]] = [set()]
         self.nonlocal_vars_stack: List[Set[str]] = [set()]
+
+        # Instance field taint: e.g. self.query -> "sql"
+        self.instance_field_taint: Dict[str, Optional[str]] = {}
+
+        # Function taint contracts from Pass 1: func_name -> contract
+        self.function_contracts: Dict[str, Dict[str, Any]] = {}
 
     @property
     def tainted_vars(self) -> Dict[str, str]:
@@ -366,14 +412,40 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 self._set_var_taint(target.id, "path")
             elif value and self._references_tainted_var(value, taint_type="path"):
                 self._set_var_taint(target.id, "path")
+            elif value and self._references_tainted_var(value):
+                self._set_var_taint(target.id, "generic")
             else:
                 self._set_var_taint(target.id, None)
 
+        elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+            attr_name = target.attr
+            if value and (self._is_potential_sql_expr(value) or self._references_tainted_var(value, taint_type="sql")):
+                self.instance_field_taint[attr_name] = "sql"
+            elif value and (self._is_potential_path_expr(value) or self._references_tainted_var(value, taint_type="path") or self._is_path_like_node(value)):
+                self.instance_field_taint[attr_name] = "path"
+            elif value and self._references_tainted_var(value):
+                self.instance_field_taint[attr_name] = "generic"
+            else:
+                self.instance_field_taint.pop(attr_name, None)
+
     def _references_tainted_var(self, node: ast.AST, taint_type: Optional[str] = None) -> bool:
-        """Check if an AST expression references any currently tainted variable."""
+        """Check if an AST expression references any currently tainted variable, self.attr, or return of tainted call."""
         for sub in ast.walk(node):
             if isinstance(sub, ast.Name) and self._is_var_tainted(sub.id, taint_type=taint_type):
                 return True
+            if isinstance(sub, ast.Attribute) and isinstance(sub.value, ast.Name) and sub.value.id == "self":
+                tt = self.instance_field_taint.get(sub.attr)
+                if tt and (taint_type is None or tt == taint_type or tt == "generic"):
+                    return True
+            if isinstance(sub, ast.Call):
+                fname = self._resolve_call_name(sub.func)
+                base_name = fname.split(".")[-1]
+                contract = self.function_contracts.get(fname) or self.function_contracts.get(base_name)
+                if contract:
+                    returns_args = contract.get("returns_args", set())
+                    for idx, arg_node in enumerate(sub.args):
+                        if idx in returns_args and self._references_tainted_var(arg_node, taint_type=taint_type):
+                            return True
         return False
 
     def visit_Assign(self, node: ast.Assign) -> None:
@@ -945,6 +1017,176 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 remediation="Use tempfile.NamedTemporaryFile() or tempfile.mkstemp() which create files atomically.",
             ))
 
+        # Inter-Procedural Call Graph Sink Propagation
+        base_name = func_name.split(".")[-1]
+        contract = self.function_contracts.get(func_name) or self.function_contracts.get(base_name)
+        if contract and contract.get("sink_args"):
+            for idx in contract["sink_args"]:
+                if idx < len(node.args) and self._references_tainted_var(node.args[idx]):
+                    cvss = cvss_for_cwe("CWE-89")
+                    self.findings.append(Finding(
+                        cwe_id="CWE-89",
+                        title="Inter-Procedural Injection via Tainted Parameter Flow",
+                        description=f"Function '{func_name}' passes tainted argument at position {idx} directly into internal sink.",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        severity=cvss["severity"],
+                        cvss_score=cvss["base_score"],
+                        cvss_vector=cvss["vector_string"],
+                        code_snippet=self._get_code_snippet(node.lineno),
+                        remediation="Sanitize input or use parameterized queries before passing arguments to sink.",
+                    ))
+
+        # 9. CWE-611: XML External Entity (XXE)
+        if (
+            func_name in (
+                "xml.etree.ElementTree.parse", "xml.etree.ElementTree.fromstring",
+                "xml.etree.cElementTree.parse", "xml.etree.cElementTree.fromstring",
+                "lxml.etree.parse", "lxml.etree.fromstring", "lxml.etree.fromstringlist",
+                "xml.sax.parse", "xml.sax.parseString", "xml.dom.minidom.parse",
+                "xml.dom.minidom.parseString", "xml.dom.pulldom.parse",
+            )
+            or (
+                isinstance(node.func, ast.Attribute) and node.func.attr in ("parse", "fromstring")
+                and any(pkg in func_name for pkg in ("etree", "ElementTree", "minidom", "sax"))
+            )
+        ):
+            if not func_name.startswith("defusedxml"):
+                is_xxe = True
+                for kw in node.keywords:
+                    if kw.arg == "parser":
+                        # If parser resolves entities or default, flag
+                        pass
+                if is_xxe:
+                    cvss = cvss_for_cwe("CWE-611")
+                    self.findings.append(Finding(
+                        cwe_id="CWE-611",
+                        title="Improper Restriction of XML External Entity Reference (XXE)",
+                        description=f"Standard XML parsing function '{func_name}' detected without secure entity resolution restrictions.",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        severity=cvss["severity"],
+                        cvss_score=cvss["base_score"],
+                        cvss_vector=cvss["vector_string"],
+                        code_snippet=self._get_code_snippet(node.lineno),
+                        remediation="Use defusedxml package (e.g. defusedxml.ElementTree) or configure XMLParser(resolve_entities=False, no_network=True).",
+                    ))
+
+        # 10. CWE-918: Server-Side Request Forgery (SSRF)
+        if func_name in (
+            "requests.get", "requests.post", "requests.put", "requests.delete", "requests.head", "requests.request",
+            "urllib.request.urlopen", "urllib.request.urlretrieve",
+            "httpx.get", "httpx.post", "httpx.put", "httpx.delete", "httpx.request",
+            "aiohttp.ClientSession.get", "aiohttp.ClientSession.post",
+        ):
+            url_arg = node.args[0] if node.args else None
+            if not url_arg and node.keywords:
+                for kw in node.keywords:
+                    if kw.arg in ("url", "uri"):
+                        url_arg = kw.value
+                        break
+            if url_arg:
+                is_ssrf = False
+                ssrf_desc = ""
+                raw_url = self._extract_string_literals(url_arg)
+                if "169.254.169.254" in raw_url or "metadata.google.internal" in raw_url:
+                    is_ssrf = True
+                    ssrf_desc = "Outbound HTTP request targets cloud metadata endpoint (169.254.169.254), exposing sensitive IAM credentials."
+                elif self._references_tainted_var(url_arg) or (isinstance(url_arg, ast.Name) and self._is_var_tainted(url_arg.id)):
+                    is_ssrf = True
+                    ssrf_desc = f"Call to '{func_name}' fetches dynamic or untrusted URL from tainted variable, exposing internal services to SSRF."
+                elif isinstance(url_arg, ast.JoinedStr) and any(isinstance(p, ast.FormattedValue) for p in url_arg.values):
+                    is_ssrf = True
+                    ssrf_desc = f"Call to '{func_name}' constructs destination URL via dynamic string interpolation without whitelist validation."
+
+                if is_ssrf:
+                    cvss = cvss_for_cwe("CWE-918")
+                    self.findings.append(Finding(
+                        cwe_id="CWE-918",
+                        title="Server-Side Request Forgery (SSRF)",
+                        description=ssrf_desc,
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        severity=cvss["severity"],
+                        cvss_score=cvss["base_score"],
+                        cvss_vector=cvss["vector_string"],
+                        code_snippet=self._get_code_snippet(node.lineno),
+                        remediation="Validate destination URLs against an explicit domain whitelist and block private IP ranges (RFC 1918) and link-local metadata endpoints.",
+                    ))
+
+        # 11. CWE-1336 / CWE-79: Server-Side Template Injection & XSS
+        if func_name in (
+            "jinja2.Template", "Template", "jinja2.Environment.from_string",
+            "flask.render_template_string", "render_template_string",
+        ):
+            tmpl_arg = node.args[0] if node.args else None
+            if not tmpl_arg and node.keywords:
+                for kw in node.keywords:
+                    if kw.arg in ("source", "template_string", "template"):
+                        tmpl_arg = kw.value
+                        break
+            if tmpl_arg and not (isinstance(tmpl_arg, ast.Constant) and isinstance(tmpl_arg.value, str)):
+                cvss = cvss_for_cwe("CWE-1336")
+                self.findings.append(Finding(
+                    cwe_id="CWE-1336",
+                    title="Improper Neutralization of Special Elements in Template Engine (SSTI)",
+                    description=f"Call to '{func_name}' renders dynamic non-constant template string, allowing Remote Code Execution via SSTI.",
+                    file_path=self.file_path,
+                    line_number=node.lineno,
+                    severity=cvss["severity"],
+                    cvss_score=cvss["base_score"],
+                    cvss_vector=cvss["vector_string"],
+                    code_snippet=self._get_code_snippet(node.lineno),
+                    remediation="Never concatenate user input into template strings. Use render_template() with static template files and pass variables via context dictionary.",
+                ))
+
+        # 12. CWE-943: NoSQL Injection
+        if func_name.endswith((".find", ".find_one", ".update", ".update_one", ".update_many", ".delete_one", ".delete_many")):
+            query_arg = node.args[0] if node.args else None
+            if query_arg:
+                is_nosql = False
+                raw_text = self._extract_string_literals(query_arg)
+                if "$where" in raw_text or "$expr" in raw_text:
+                    if not self._is_pure_static_constant_binop(query_arg):
+                        is_nosql = True
+                elif self._references_tainted_var(query_arg):
+                    is_nosql = True
+
+                if is_nosql:
+                    cvss = cvss_for_cwe("CWE-943")
+                    self.findings.append(Finding(
+                        cwe_id="CWE-943",
+                        title="Improper Neutralization of Special Elements in Data Query Logic (NoSQL Injection)",
+                        description=f"NoSQL database query operation '{func_name}' contains unsanitized dynamic logic or $where expression.",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        severity=cvss["severity"],
+                        cvss_score=cvss["base_score"],
+                        cvss_vector=cvss["vector_string"],
+                        code_snippet=self._get_code_snippet(node.lineno),
+                        remediation="Avoid using $where or javascript evaluation in queries. Enforce strict JSON schema validation and parameterized query filters.",
+                    ))
+
+        # 13. CWE-400: Regular Expression Denial of Service (ReDoS)
+        if func_name in ("re.compile", "re.search", "re.match", "re.findall", "re.finditer", "re.sub"):
+            pattern_arg = node.args[0] if node.args else None
+            if pattern_arg and isinstance(pattern_arg, ast.Constant) and isinstance(pattern_arg.value, str):
+                pattern_str = pattern_arg.value
+                if re.search(r"\([^\)]*[+*]\)\s*[+*]", pattern_str) or re.search(r"\(\?:\([^\)]*[+*]\)\)[+*]", pattern_str):
+                    cvss = cvss_for_cwe("CWE-400")
+                    self.findings.append(Finding(
+                        cwe_id="CWE-400",
+                        title="Uncontrolled Resource Consumption via Catastrophic Regex Backtracking (ReDoS)",
+                        description=f"Regular expression pattern '{pattern_str}' contains nested quantifiers susceptible to polynomial or exponential backtracking.",
+                        file_path=self.file_path,
+                        line_number=node.lineno,
+                        severity=cvss["severity"],
+                        cvss_score=cvss["base_score"],
+                        cvss_vector=cvss["vector_string"],
+                        code_snippet=self._get_code_snippet(node.lineno),
+                        remediation="Rewrite regular expression to remove nested quantifiers, or use atomic grouping / re2 with linear time guarantees.",
+                    ))
+
         self.generic_visit(node)
 
 
@@ -953,12 +1195,12 @@ class ASTScanner:
 
     def __init__(
         self,
-        config: Optional[BlueTeamConfig] = None,
+        config: Optional[CookieCyberConfig] = None,
         cvss_version: Optional[str] = None,
         shannon_entropy_threshold: Optional[float] = None,
         exclude_dirs: Optional[Set[str]] = None,
     ):
-        self.config = config or BlueTeamConfig()
+        self.config = config or CookieCyberConfig()
         self.cvss_version = cvss_version or self.config.cvss_version
         self.shannon_entropy_threshold = (
             shannon_entropy_threshold if shannon_entropy_threshold is not None
@@ -1031,12 +1273,16 @@ class ASTScanner:
         _CURRENT_CVSS_VERSION = self.cvss_version
         try:
             source_lines = code_content.splitlines()
+            cg_visitor = CallGraphVisitor()
+            cg_visitor.visit(tree)
+
             visitor = ASTScannerVisitor(
                 source_lines=source_lines,
                 file_path=file_path,
                 cvss_version=self.cvss_version,
                 shannon_entropy_threshold=self.shannon_entropy_threshold,
             )
+            visitor.function_contracts = cg_visitor.contracts
             visitor.visit(tree)
 
             findings = visitor.findings
@@ -1229,7 +1475,7 @@ def findings_to_sarif(
             {
                 "tool": {
                     "driver": {
-                        "name": "BlueTeam-AST-Scanner",
+                        "name": "CookieCyberTeam-AST-Scanner",
                         "semanticVersion": tool_version,
                         "rules": list(rules_map.values()),
                     }

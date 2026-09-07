@@ -400,7 +400,7 @@ class TestASTScanner(unittest.TestCase):
         self.assertEqual(len(sarif["runs"]), 1)
 
         run = sarif["runs"][0]
-        self.assertEqual(run["tool"]["driver"]["name"], "BlueTeam-AST-Scanner")
+        self.assertEqual(run["tool"]["driver"]["name"], "CookieCyberTeam-AST-Scanner")
         self.assertEqual(len(run["results"]), 1)
 
         result = run["results"][0]
@@ -682,6 +682,218 @@ class TestASTScanner(unittest.TestCase):
                 tf_path.unlink()
             except Exception:
                 pass
+
+
+    def test_cwe611_xxe_etree_parse(self):
+        """Verify CWE-611 XML External Entity (XXE) is flagged for xml.etree.ElementTree.parse."""
+        code = "import xml.etree.ElementTree as ET\ntree = ET.parse('user_supplied.xml')\n"
+        findings = self.scanner.scan_code(code)
+        cwe611 = [f for f in findings if f.cwe_id == "CWE-611"]
+        self.assertEqual(len(cwe611), 1)
+        self.assertIn("XXE", cwe611[0].title)
+
+    def test_cwe611_xxe_minidom_parse(self):
+        """Verify CWE-611 is flagged for xml.dom.minidom.parse."""
+        code = "import xml.dom.minidom\ndoc = xml.dom.minidom.parse('data.xml')\n"
+        findings = self.scanner.scan_code(code)
+        cwe611 = [f for f in findings if f.cwe_id == "CWE-611"]
+        self.assertEqual(len(cwe611), 1)
+
+    def test_cwe611_xxe_defusedxml_not_flagged(self):
+        """Verify defusedxml parser is recognized as safe and NOT flagged."""
+        code = "import defusedxml.ElementTree as ET\ntree = ET.parse('safe.xml')\n"
+        findings = self.scanner.scan_code(code)
+        cwe611 = [f for f in findings if f.cwe_id == "CWE-611"]
+        self.assertEqual(len(cwe611), 0)
+
+    def test_cwe918_ssrf_requests_get_tainted_url(self):
+        """Verify CWE-918 SSRF is flagged when requests.get uses dynamic formatted url."""
+        code = (
+            "import requests\n"
+            "def fetch(domain):\n"
+            "    url = f'https://{domain}/api'\n"
+            "    return requests.get(url)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe918 = [f for f in findings if f.cwe_id == "CWE-918"]
+        self.assertEqual(len(cwe918), 1)
+        self.assertIn("SSRF", cwe918[0].title)
+
+    def test_cwe918_ssrf_urllib_request_urlopen(self):
+        """Verify CWE-918 is flagged when urllib.request.urlopen calls dynamic destination."""
+        code = (
+            "import urllib.request\n"
+            "def retrieve(path):\n"
+            "    target = 'http://internal.service/' + path\n"
+            "    return urllib.request.urlopen(target)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe918 = [f for f in findings if f.cwe_id == "CWE-918"]
+        self.assertEqual(len(cwe918), 1)
+
+    def test_cwe918_ssrf_metadata_ip_flagged(self):
+        """Verify hardcoded cloud metadata IP (169.254.169.254) is flagged as SSRF."""
+        code = "import requests\nresp = requests.get('http://169.254.169.254/latest/meta-data/')\n"
+        findings = self.scanner.scan_code(code)
+        cwe918 = [f for f in findings if f.cwe_id == "CWE-918"]
+        self.assertEqual(len(cwe918), 1)
+        self.assertIn("cloud metadata", cwe918[0].description)
+
+    def test_cwe918_ssrf_static_url_not_flagged(self):
+        """Verify requests to benign static URLs are NOT flagged as SSRF."""
+        code = "import requests\nresp = requests.get('https://api.github.com/zen')\n"
+        findings = self.scanner.scan_code(code)
+        cwe918 = [f for f in findings if f.cwe_id == "CWE-918"]
+        self.assertEqual(len(cwe918), 0)
+
+    def test_cwe1336_jinja2_template_injection(self):
+        """Verify CWE-1336 SSTI is flagged when jinja2.Template is initialized with dynamic string."""
+        code = (
+            "import jinja2\n"
+            "def render(user_input):\n"
+            "    tmpl = 'Hello ' + user_input\n"
+            "    return jinja2.Template(tmpl).render()\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe1336 = [f for f in findings if f.cwe_id == "CWE-1336"]
+        self.assertEqual(len(cwe1336), 1)
+        self.assertIn("SSTI", cwe1336[0].title)
+
+    def test_cwe1336_flask_render_template_string(self):
+        """Verify flask.render_template_string is flagged when given non-constant template."""
+        code = (
+            "import flask\n"
+            "def show(content):\n"
+            "    return flask.render_template_string(content)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe1336 = [f for f in findings if f.cwe_id == "CWE-1336"]
+        self.assertEqual(len(cwe1336), 1)
+
+    def test_cwe943_nosql_injection_mongodb(self):
+        """Verify CWE-943 NoSQL injection is flagged for dynamic $where query in collection.find."""
+        code = (
+            "def get_user(db, name):\n"
+            "    return db.users.find({'$where': 'this.name == \"' + name + '\"'})\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe943 = [f for f in findings if f.cwe_id == "CWE-943"]
+        self.assertEqual(len(cwe943), 1)
+        self.assertIn("NoSQL", cwe943[0].title)
+
+    def test_cwe400_redos_nested_quantifiers(self):
+        """Verify CWE-400 ReDoS is flagged for catastrophic backtracking regex pattern."""
+        code = "import re\npattern = re.compile(r'^(a+)+$')\n"
+        findings = self.scanner.scan_code(code)
+        cwe400 = [f for f in findings if f.cwe_id == "CWE-400"]
+        self.assertEqual(len(cwe400), 1)
+        self.assertIn("ReDoS", cwe400[0].title)
+
+    def test_cwe400_redos_safe_regex_not_flagged(self):
+        """Verify linear safe regex patterns are NOT flagged as ReDoS."""
+        code = "import re\npattern = re.compile(r'^[a-zA-Z0-9_-]+$')\n"
+        findings = self.scanner.scan_code(code)
+        cwe400 = [f for f in findings if f.cwe_id == "CWE-400"]
+        self.assertEqual(len(cwe400), 0)
+
+    def test_call_graph_inter_procedural_sink_detection(self):
+        """Verify Call Graph Pass 1 identifies sink contracts and flags tainted argument flow."""
+        code = (
+            "import sqlite3\n"
+            "def db_exec(query_str):\n"
+            "    conn = sqlite3.connect(':memory:')\n"
+            "    conn.execute(query_str)\n"
+            "\n"
+            "def handler(user_id):\n"
+            "    raw_sql = 'SELECT * FROM users WHERE id = ' + user_id\n"
+            "    db_exec(raw_sql)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        inter_proc = [f for f in findings if "Inter-Procedural" in f.title]
+        self.assertGreaterEqual(len(inter_proc), 1)
+        self.assertEqual(inter_proc[0].cwe_id, "CWE-89")
+
+    def test_cwe89_instance_field_taint_propagation(self):
+        """Verify instance attribute self.sql_query receives and propagates SQL taint."""
+        code = (
+            "import sqlite3\n"
+            "class Repository:\n"
+            "    def set_filter(self, val):\n"
+            "        self.query = 'SELECT * FROM items WHERE name = ' + val\n"
+            "    def execute(self):\n"
+            "        conn = sqlite3.connect(':memory:')\n"
+            "        conn.execute(self.query)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe89 = [f for f in findings if f.cwe_id == "CWE-89"]
+        self.assertGreaterEqual(len(cwe89), 1)
+
+    def test_cwe22_tarfile_extractall_without_members(self):
+        """Verify unvalidated tarfile.extractall() is flagged as CWE-22 Zip Slip."""
+        code = "import tarfile\ntar = tarfile.open('archive.tar')\ntar.extractall('/opt/app')\n"
+        findings = self.scanner.scan_code(code)
+        cwe22 = [f for f in findings if f.cwe_id == "CWE-22"]
+        self.assertEqual(len(cwe22), 1)
+        self.assertIn("extractall", cwe22[0].description.lower())
+
+    def test_cwe327_des_broken_cryptography(self):
+        """Verify deprecated DES algorithm is flagged as CWE-327."""
+        code = "from Crypto.Cipher import DES\ncipher = DES.new(b'12345678')\n"
+        findings = self.scanner.scan_code(code)
+        cwe327 = [f for f in findings if f.cwe_id == "CWE-327"]
+        self.assertEqual(len(cwe327), 1)
+
+    def test_cwe798_high_entropy_secret_flagged(self):
+        """Verify high entropy secret string literal is flagged as CWE-798."""
+        code = "API_TOKEN = 'sk-aB3dE5gH7iJ9kL1mN3oP5qR7sT9uV1wX'\n"
+        findings = self.scanner.scan_code(code)
+        cwe798 = [f for f in findings if f.cwe_id == "CWE-798"]
+        self.assertEqual(len(cwe798), 1)
+
+    def test_cwe798_low_entropy_identifier_not_flagged(self):
+        """Verify low-entropy placeholder identifier is NOT flagged as CWE-798."""
+        code = "user_role = 'administrator_role'\n"
+        findings = self.scanner.scan_code(code)
+        cwe798 = [f for f in findings if f.cwe_id == "CWE-798"]
+        self.assertEqual(len(cwe798), 0)
+
+    def test_scan_directory_exclude_dirs_respected(self):
+        """Verify scan_directory skips subdirectories matching exclude_dirs."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            p = Path(tmp_dir)
+            clean_dir = p / "clean"
+            clean_dir.mkdir()
+            (clean_dir / "good.py").write_text("x = 1\n", encoding="utf-8")
+
+            ignored_dir = p / ".git"
+            ignored_dir.mkdir()
+            (ignored_dir / "bad.py").write_text("import os\nos.system('calc')\n", encoding="utf-8")
+
+            findings = self.scanner.scan_directory(p)
+            cwe78 = [f for f in findings if f.cwe_id == "CWE-78"]
+            # Ignored because .git is in exclude_dirs
+            self.assertEqual(len(cwe78), 0)
+
+    def test_scan_file_not_found_raises(self):
+        """Verify scan_file raises FileNotFoundError for non-existent target."""
+        with self.assertRaises(FileNotFoundError):
+            self.scanner.scan_file("non_existent_path_xyz_123.py")
+
+    def test_findings_to_sarif_multiple_cwes(self):
+        """Verify findings_to_sarif converts multiple distinct findings with valid rules and indices."""
+        code = (
+            "import os\n"
+            "import pickle\n"
+            "def run(cmd, data):\n"
+            "    os.system(cmd)\n"
+            "    pickle.loads(data)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        sarif = self.scanner.to_sarif(findings)
+        self.assertEqual(sarif["version"], "2.1.0")
+        self.assertEqual(sarif["runs"][0]["tool"]["driver"]["name"], "CookieCyberTeam-AST-Scanner")
+        self.assertGreaterEqual(len(sarif["runs"][0]["tool"]["driver"]["rules"]), 2)
+        self.assertGreaterEqual(len(sarif["runs"][0]["results"]), 2)
 
 
 if __name__ == "__main__":
