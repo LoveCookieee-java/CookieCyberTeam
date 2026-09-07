@@ -8,10 +8,14 @@ build/
 dist/
 *.egg-info/
 
-# Environments
+# Environments & Secrets
 .env
+*.token
+*.key
+*.pem
 .venv
 venv/
+*.mcpb
 
 # SQLite databases & temp artifacts
 *.db
