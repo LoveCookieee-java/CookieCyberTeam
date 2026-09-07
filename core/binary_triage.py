@@ -418,7 +418,7 @@ class BinaryTriageEngine:
         try:
             file_size = p.stat().st_size
             sha256_hash = hashlib.sha256()
-            md5_hash = hashlib.md5()
+            md5_hash = hashlib.md5(usedforsecurity=False)  # Forensic IOC checksum (non-cryptographic)
             analysis_chunks: List[bytes] = []
             bytes_read_for_analysis = 0
 

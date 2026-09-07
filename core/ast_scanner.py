@@ -87,7 +87,38 @@ class Finding:
 
 
 class CallGraphVisitor(ast.NodeVisitor):
-    """Pass 1: Pre-computes call graph and function taint contracts across the module."""
+    """Pass 1: Pre-computes call graph and typed function taint contracts across the module."""
+
+    KNOWN_SINKS: Dict[str, Tuple[str, str]] = {
+        # SQL Sinks
+        "execute": ("sql", "CWE-89"),
+        "executemany": ("sql", "CWE-89"),
+        "executescript": ("sql", "CWE-89"),
+        # Command Sinks
+        "system": ("command", "CWE-78"),
+        "popen": ("command", "CWE-78"),
+        "run": ("command", "CWE-78"),
+        "check_output": ("command", "CWE-78"),
+        "check_call": ("command", "CWE-78"),
+        "getoutput": ("command", "CWE-78"),
+        # Code Eval Sinks
+        "eval": ("eval", "CWE-95"),
+        "exec": ("eval", "CWE-95"),
+        # Path Sinks
+        "open": ("path", "CWE-22"),
+        "read_text": ("path", "CWE-22"),
+        "read_bytes": ("path", "CWE-22"),
+        "unlink": ("path", "CWE-22"),
+        "rmdir": ("path", "CWE-22"),
+        "remove": ("path", "CWE-22"),
+        # SSRF Sinks
+        "urlopen": ("ssrf", "CWE-918"),
+        "urlretrieve": ("ssrf", "CWE-918"),
+        # Deserialization Sinks
+        "loads": ("deserialization", "CWE-502"),
+        "load": ("deserialization", "CWE-502"),
+        "unsafe_load": ("deserialization", "CWE-502"),
+    }
 
     def __init__(self):
         self.contracts: Dict[str, Dict[str, Any]] = {}
@@ -103,6 +134,7 @@ class CallGraphVisitor(ast.NodeVisitor):
     def _analyze_function(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
         params = [arg.arg for arg in getattr(node.args, "posonlyargs", []) + node.args.args]
         returns_args: Set[int] = set()
+        sink_contracts: Dict[int, Tuple[str, str]] = {}
         sink_args: Set[int] = set()
 
         for sub in ast.walk(node):
@@ -113,15 +145,25 @@ class CallGraphVisitor(ast.NodeVisitor):
                             returns_args.add(idx)
 
             if isinstance(sub, ast.Call):
-                for idx, p in enumerate(params):
-                    for a in sub.args:
-                        for a_node in ast.walk(a):
-                            if isinstance(a_node, ast.Name) and a_node.id == p:
-                                sink_args.add(idx)
+                callee = ""
+                if isinstance(sub.func, ast.Name):
+                    callee = sub.func.id
+                elif isinstance(sub.func, ast.Attribute):
+                    callee = sub.func.attr
+
+                if callee in self.KNOWN_SINKS:
+                    sink_type, cwe_id = self.KNOWN_SINKS[callee]
+                    for idx, p in enumerate(params):
+                        for a in sub.args:
+                            for a_node in ast.walk(a):
+                                if isinstance(a_node, ast.Name) and a_node.id == p:
+                                    sink_contracts[idx] = (sink_type, cwe_id)
+                                    sink_args.add(idx)
 
         self.contracts[node.name] = {
             "params": params,
             "returns_args": returns_args,
+            "sink_contracts": sink_contracts,
             "sink_args": sink_args,
         }
 
@@ -956,6 +998,12 @@ class ASTScannerVisitor(ast.NodeVisitor):
                         break
 
         if is_weak_hash:
+            for kw in node.keywords:
+                if kw.arg == "usedforsecurity" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+                    is_weak_hash = False
+                    break
+
+        if is_weak_hash:
             cvss = cvss_for_cwe("CWE-328")
             self.findings.append(Finding(
                 cwe_id="CWE-328",
@@ -1020,22 +1068,27 @@ class ASTScannerVisitor(ast.NodeVisitor):
         # Inter-Procedural Call Graph Sink Propagation
         base_name = func_name.split(".")[-1]
         contract = self.function_contracts.get(func_name) or self.function_contracts.get(base_name)
-        if contract and contract.get("sink_args"):
-            for idx in contract["sink_args"]:
-                if idx < len(node.args) and self._references_tainted_var(node.args[idx]):
-                    cvss = cvss_for_cwe("CWE-89")
-                    self.findings.append(Finding(
-                        cwe_id="CWE-89",
-                        title="Inter-Procedural Injection via Tainted Parameter Flow",
-                        description=f"Function '{func_name}' passes tainted argument at position {idx} directly into internal sink.",
-                        file_path=self.file_path,
-                        line_number=node.lineno,
-                        severity=cvss["severity"],
-                        cvss_score=cvss["base_score"],
-                        cvss_vector=cvss["vector_string"],
-                        code_snippet=self._get_code_snippet(node.lineno),
-                        remediation="Sanitize input or use parameterized queries before passing arguments to sink.",
-                    ))
+        if contract:
+            sink_contracts = contract.get("sink_contracts", {})
+            legacy_sink_args = contract.get("sink_args", set())
+            for idx in sorted(set(sink_contracts.keys()) | legacy_sink_args):
+                if idx < len(node.args):
+                    arg_node = node.args[idx]
+                    sink_type, cwe_id = sink_contracts.get(idx, ("sql", "CWE-89"))
+                    if self._references_tainted_var(arg_node, taint_type=sink_type if sink_type in ("sql", "path") else None):
+                        cvss = cvss_for_cwe(cwe_id)
+                        self.findings.append(Finding(
+                            cwe_id=cwe_id,
+                            title=f"Inter-Procedural Injection via Tainted Parameter Flow ({cwe_id})",
+                            description=f"Function '{func_name}' passes tainted argument at position {idx} directly into internal {sink_type} sink.",
+                            file_path=self.file_path,
+                            line_number=node.lineno,
+                            severity=cvss["severity"],
+                            cvss_score=cvss["base_score"],
+                            cvss_vector=cvss["vector_string"],
+                            code_snippet=self._get_code_snippet(node.lineno),
+                            remediation="Sanitize input or use parameterized queries before passing arguments to sink.",
+                        ))
 
         # 9. CWE-611: XML External Entity (XXE)
         if (

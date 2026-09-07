@@ -173,14 +173,14 @@ class ASTCodeChunker:
         return chunks
 
     CLASS_PATTERNS = [
-        re.compile(r"^\s*(?:export\s+|public\s+|private\s+|protected\s+|static\s+|abstract\s+)*(?:class|interface|struct|enum)\s+([A-Za-z0-9_]+)"),
+        re.compile(r"^\s*(?:(?:export|public|private|protected|static|abstract)\s+)*(?:class|interface|struct|enum)\s+([A-Za-z0-9_]+)"),
         re.compile(r"^\s*type\s+([A-Za-z0-9_]+)\s+(?:struct|interface)\b"),
     ]
     FUNC_PATTERNS = [
         re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Za-z0-9_]+)\s*\("),
         re.compile(r"^\s*(?:async\s+)?function\s+([A-Za-z0-9_]+)\s*\("),
         re.compile(r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_]+)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z0-9_]+)\s*=>"),
-        re.compile(r"^\s*(?:export\s+|public\s+|private\s+|protected\s+|static\s+|async\s+|inline\s+|virtual\s+)*(?:[A-Za-z0-9_<>[\]*&:]+\s+)+([A-Za-z0-9_]+)\s*\([^;{}]*\)\s*\{?"),
+        re.compile(r"^\s*(?:(?:export|public|private|protected|static|async|inline|virtual)\s+)*[A-Za-z0-9_<>[\]*&:]+\s+([A-Za-z0-9_]+)\s*\([^;{}]*\)\s*\{?"),
     ]
 
     def chunk_multi_lang(self, code_str: str, file_path: str = "<memory>") -> List[CodeChunk]:
