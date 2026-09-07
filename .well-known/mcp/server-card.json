@@ -2,7 +2,8 @@
   "serverInfo": {
     "name": "cookie-cyber-team",
     "version": "1.0.0",
-    "description": "Single Unified Intelligent MCP Server, Defensive Guardrails & Cyber Defense System for autonomous vulnerability remediation, inter-procedural taint flow analysis, air-gapped binary triage, and zero-regression safe patch verification."
+    "description": "Single Unified Intelligent MCP Server, Defensive Guardrails & Cyber Defense System for autonomous vulnerability remediation, inter-procedural taint flow analysis, air-gapped binary triage, and zero-regression safe patch verification.",
+    "iconUrl": "https://raw.githubusercontent.com/LoveCookieee-java/CookieCyberTeam/main/icon.png"
   },
   "authentication": {
     "required": false

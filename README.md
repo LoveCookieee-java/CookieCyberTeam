@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/LoveCookieee-java/CookieCyberTeam/main/icon.png" alt="CookieCyberTeam Logo" width="96" height="96" />
+</p>
+
 # CookieCyberTeam
 
 <p align="center">
