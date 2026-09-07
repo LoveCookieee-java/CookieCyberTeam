@@ -11,7 +11,7 @@
   <a href="#verification--testing"><img src="https://img.shields.io/badge/Tests-123%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
   <a href="#safety-invariants--policies"><img src="https://img.shields.io/badge/Safety-Air--Gapped%20Zero--Execution-red.svg?style=flat-square" alt="Safety"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-green.svg?style=flat-square" alt="License"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License"></a>
 </p>
 
 ---
@@ -403,4 +403,4 @@ BlueTeamAgent/
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details.
