@@ -4,9 +4,10 @@
 startCommand:
   type: stdio
   config:
-    command: uvx
+    command: python
     args:
-      - cookie-cyber-team
+      - server.py
+      - --stdio
     env:
       CAPE_API_URL: ""
       CAPE_API_KEY: ""
