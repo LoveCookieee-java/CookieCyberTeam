@@ -133,9 +133,10 @@ class TestMCPServer(unittest.TestCase):
         self.assertEqual(len(payload["residual_vulnerabilities"]), 1)
 
     def test_tool_call_create_reproduction_test(self):
-        """Verify mcp_create_reproduction_test writes and runs test."""
+        """Verify mcp_create_reproduction_test writes and runs test within isolated workspace."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            test_file = Path(tmpdir) / "test_repro.py"
+            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmpdir)
+            test_file = Path(tmpdir) / "tests" / "repro" / "test_repro.py"
             failing_test_code = (
                 "import unittest\n"
                 "class TestBug(unittest.TestCase):\n"
@@ -157,10 +158,221 @@ class TestMCPServer(unittest.TestCase):
                     },
                 },
             }
-            resp = self.server.handle_request(req)
+            resp = server.handle_request(req)
             payload = json.loads(resp["result"]["content"][0]["text"])
             self.assertTrue(payload["success"])
             self.assertTrue(payload["reproduced_successfully"])
+
+    def test_tool_call_create_reproduction_test_path_traversal_rejections(self):
+        """Verify mcp_create_reproduction_test strictly rejects path traversal and sensitive targets (case-insensitive)."""
+        dummy_code = "import unittest\nclass T(unittest.TestCase): pass\n"
+
+        # 1. Traversal outside workspace
+        req_traversal = {
+            "jsonrpc": "2.0",
+            "id": 190,
+            "method": "tools/call",
+            "params": {
+                "name": "mcp_create_reproduction_test",
+                "arguments": {"save_path": "../malicious_escape.py", "test_code": dummy_code},
+            },
+        }
+        resp = self.server.handle_request(req_traversal)
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(payload["success"])
+        self.assertIn("Path traversal", payload["error"])
+
+        # 2. Writing into .git directory (including Windows case-variations like .GIT)
+        for git_variant in (".git/hooks/pre-commit", ".GIT/hooks/pre-commit", ".Git/config"):
+            req_git = {
+                "jsonrpc": "2.0",
+                "id": 191,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_create_reproduction_test",
+                    "arguments": {"save_path": git_variant, "test_code": dummy_code},
+                },
+            }
+            resp = self.server.handle_request(req_git)
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertFalse(payload["success"])
+            self.assertIn(".git directory is strictly forbidden", payload["error"])
+
+        # 3. Writing to sensitive environment files (including uppercase .ENV)
+        for env_variant in (".env", ".ENV", ".ssh/authorized_keys"):
+            req_env = {
+                "jsonrpc": "2.0",
+                "id": 192,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_create_reproduction_test",
+                    "arguments": {"save_path": env_variant, "test_code": dummy_code},
+                },
+            }
+            resp = self.server.handle_request(req_env)
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertFalse(payload["success"])
+            self.assertIn("sensitive path", payload["error"])
+
+    def test_tool_call_apply_safe_patch_single_committer_token_validation(self):
+        """Verify mcp_apply_safe_patch enforces single-committer session tokens issued via DAG pipeline."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "app.py"
+            test_file.write_text("x = 10\n", encoding="utf-8")
+
+            # 1. Initialize DAG pipeline -> issues committer_token for Lead Orchestrator
+            init_req = {
+                "jsonrpc": "2.0",
+                "id": 193,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_orchestrate_dag",
+                    "arguments": {"action": "init_pipeline", "target_file": str(test_file)},
+                },
+            }
+            init_resp = self.server.handle_request(init_req)
+            init_data = json.loads(init_resp["result"]["content"][0]["text"])
+            self.assertIn("committer_token", init_data)
+            token = init_data["committer_token"]
+            self.assertTrue(token.startswith("lead-token-"))
+
+            # 2. Applying patch without token fails Single-Committer Gate
+            patch_no_token = {
+                "jsonrpc": "2.0",
+                "id": 194,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_apply_safe_patch",
+                    "arguments": {
+                        "target_file": str(test_file),
+                        "patched_content": "x = 20\n",
+                        "committer": "Lead Orchestrator",
+                    },
+                },
+            }
+            res = self.server.handle_request(patch_no_token)
+            payload = json.loads(res["result"]["content"][0]["text"])
+            self.assertFalse(payload["success"])
+            self.assertTrue(payload.get("violation"))
+            self.assertEqual(payload.get("gate"), "Single-Committer Gate")
+            self.assertIn("Missing or invalid session token", payload.get("message", ""))
+
+            # 3. Applying patch with invalid token fails Single-Committer Gate
+            patch_bad_token = {
+                "jsonrpc": "2.0",
+                "id": 195,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_apply_safe_patch",
+                    "arguments": {
+                        "target_file": str(test_file),
+                        "patched_content": "x = 20\n",
+                        "committer": "Lead Orchestrator",
+                        "committer_token": "invalid-token-xyz",
+                    },
+                },
+            }
+            res = self.server.handle_request(patch_bad_token)
+            payload = json.loads(res["result"]["content"][0]["text"])
+            self.assertFalse(payload["success"])
+            self.assertTrue(payload.get("violation"))
+            self.assertEqual(payload.get("gate"), "Single-Committer Gate")
+
+            # 4. Applying patch with valid token succeeds
+            patch_valid_token = {
+                "jsonrpc": "2.0",
+                "id": 196,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_apply_safe_patch",
+                    "arguments": {
+                        "target_file": str(test_file),
+                        "patched_content": "x = 20\n",
+                        "committer": "Lead Orchestrator",
+                        "committer_token": token,
+                    },
+                },
+            }
+            res = self.server.handle_request(patch_valid_token)
+            payload = json.loads(res["result"]["content"][0]["text"])
+            self.assertTrue(payload["success"])
+            self.assertTrue(payload["token_verified"])
+            self.assertEqual(test_file.read_text(encoding="utf-8"), "x = 20\n")
+
+    def test_tool_call_apply_safe_patch_rejects_without_token_at_startup(self):
+        """Verify mcp_apply_safe_patch rejects unauthenticated commits at server startup before any pipeline."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmpdir)
+            test_file = Path(tmpdir) / "startup_test.py"
+            test_file.write_text("v = 1\n", encoding="utf-8")
+
+            # Patch attempt without prior init_pipeline or token
+            patch_req = {
+                "jsonrpc": "2.0",
+                "id": 199,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_apply_safe_patch",
+                    "arguments": {
+                        "target_file": str(test_file),
+                        "patched_content": "v = 2\n",
+                        "committer": "Lead Orchestrator",
+                    },
+                },
+            }
+            resp = server.handle_request(patch_req)
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertFalse(payload["success"])
+            self.assertTrue(payload.get("violation"))
+            self.assertEqual(payload.get("gate"), "Single-Committer Gate")
+            self.assertIn("Missing or invalid session token", payload.get("message", ""))
+
+    def test_tool_call_orchestrate_dag_issue_committer_token(self):
+        """Verify requesting committer tokens via mcp_orchestrate_dag action."""
+        # 1. Unauthorized requester in issue_committer_token fails
+        req_unauth = {
+            "jsonrpc": "2.0",
+            "id": 197,
+            "method": "tools/call",
+            "params": {
+                "name": "mcp_orchestrate_dag",
+                "arguments": {"action": "issue_committer_token", "agent_id": "Security Auditor"},
+            },
+        }
+        resp = self.server.handle_request(req_unauth)
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(payload["success"])
+        self.assertIn("not authorized", payload["error"])
+
+        # 2. Worker calling init_pipeline does NOT receive committer_token
+        req_worker_init = {
+            "jsonrpc": "2.0",
+            "id": 198,
+            "method": "tools/call",
+            "params": {
+                "name": "mcp_orchestrate_dag",
+                "arguments": {"action": "init_pipeline", "agent_id": "Patch Developer", "target_file": "sample.py"},
+            },
+        }
+        resp_worker = self.server.handle_request(req_worker_init)
+        payload_worker = json.loads(resp_worker["result"]["content"][0]["text"])
+        self.assertTrue(payload_worker["success"])
+        self.assertNotIn("committer_token", payload_worker)
+
+        # 3. Authorized Lead Orchestrator succeeds
+        req_auth = {
+            "jsonrpc": "2.0",
+            "id": 199,
+            "method": "tools/call",
+            "params": {
+                "name": "mcp_orchestrate_dag",
+                "arguments": {"action": "issue_committer_token", "agent_id": "Lead Orchestrator"},
+            },
+        }
+        resp = self.server.handle_request(req_auth)
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertTrue(payload["success"])
+        self.assertTrue(payload["committer_token"].startswith("lead-token-"))
 
     def test_tool_call_search_code(self):
         """Verify mcp_search_code returns surgical AST chunks."""

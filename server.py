@@ -161,11 +161,21 @@ COMPROMISE_ASSESSMENT_PLAYBOOK_RESOURCE = """# Multi-Agent Compromise Assessment
 class BlueTeamMCPServer:
     """Standard JSON-RPC 2.0 Stdio MCP Server."""
 
-    def __init__(self, db_path: Optional[str | Path] = None):
+    def __init__(
+        self,
+        db_path: Optional[str | Path] = None,
+        workspace_root: Optional[str | Path] = None,
+        allowed_roots: Optional[List[str | Path]] = None,
+    ):
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+        if allowed_roots:
+            self.allowed_roots = [Path(r).resolve() for r in allowed_roots]
+        else:
+            self.allowed_roots = [self.workspace_root]
         self.scanner = ASTScanner()
         self.semgrep = SemgrepAdapter()
         self.sandbox = SandboxRunner()
-        self.patch_manager = SafePatchManager()
+        self.patch_manager = SafePatchManager(semgrep=self.semgrep, enforce_token=True)
         self.dag_engine = DAGEngine(db_path=db_path)
         self.code_searcher = HybridCodeSearch()
         self.tool_indexer = ToolchainIndexer()
@@ -281,7 +291,37 @@ class BlueTeamMCPServer:
         if not save_path or not test_code:
             return {"success": False, "error": "save_path and test_code are required."}
 
-        target = Path(save_path).resolve()
+        raw_path = Path(save_path)
+        if not raw_path.is_absolute():
+            target = (self.workspace_root / raw_path).resolve()
+        else:
+            target = raw_path.resolve()
+
+        lower_parts = [p.lower() for p in target.parts]
+
+        # 1. Strictly forbid writing inside any .git directory (case-insensitive for Windows/cross-platform)
+        if ".git" in lower_parts:
+            return {
+                "success": False,
+                "error": "Path traversal or unauthorized write: Access to .git directory is strictly forbidden.",
+            }
+
+        # 2. Strictly forbid sensitive configuration or secret paths (case-insensitive)
+        sensitive_parts = {".ssh", ".aws", ".config"}
+        if any(p in sensitive_parts or p.startswith(".env") for p in lower_parts):
+            return {
+                "success": False,
+                "error": f"Path traversal or unauthorized write: Access to sensitive path '{target.name}' is strictly forbidden.",
+            }
+
+        # 3. Enforce confinement within workspace root or designated test directory
+        is_confined = any(target == root or root in target.parents for root in self.allowed_roots)
+        if not is_confined:
+            return {
+                "success": False,
+                "error": f"Path traversal violation: Target '{save_path}' resolves outside allowed workspace root: {self.workspace_root}",
+            }
+
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(test_code, encoding="utf-8")
 
@@ -312,6 +352,7 @@ class BlueTeamMCPServer:
         repo_path = args.get("repo_path")
 
         committer = args.get("committer", "Lead Orchestrator")
+        committer_token = args.get("committer_token")
 
         if not target_file or patched_content is None:
             return {"success": False, "error": "target_file and patched_content are required."}
@@ -323,6 +364,7 @@ class BlueTeamMCPServer:
                 task_id=task_id,
                 repo_path=repo_path,
                 committer=committer,
+                committer_token=committer_token,
             )
             return res
         except GuardrailViolation as gv:
@@ -341,10 +383,25 @@ class BlueTeamMCPServer:
         action = args.get("action", "get_summary")
 
         if action == "init_pipeline":
+            requester = args.get("agent_id", args.get("assigned_to", "Lead Orchestrator"))
             pipeline_id = args.get("pipeline_id", f"pipe_{int(time.time())}")
             target_file = args.get("target_file", "unknown.py")
             include_soc = bool(args.get("include_soc", False))
-            return self.dag_engine.create_standard_security_pipeline(pipeline_id, target_file, include_soc=include_soc)
+            res = self.dag_engine.create_standard_security_pipeline(pipeline_id, target_file, include_soc=include_soc)
+            if requester == "Lead Orchestrator":
+                token = self.patch_manager.generate_committer_token(role="Lead Orchestrator")
+                res["committer_token"] = token
+            return res
+
+        elif action in ("issue_committer_token", "get_committer_token"):
+            requester = args.get("agent_id", args.get("assigned_to", "Lead Orchestrator"))
+            if requester != "Lead Orchestrator":
+                return {
+                    "success": False,
+                    "error": f"Role '{requester}' is not authorized to request committer tokens. Only 'Lead Orchestrator' is allowed.",
+                }
+            token = self.patch_manager.generate_committer_token(role="Lead Orchestrator")
+            return {"success": True, "committer_token": token, "role": "Lead Orchestrator"}
 
         elif action == "add_task":
             task_id = args.get("task_id")
@@ -560,6 +617,7 @@ class BlueTeamMCPServer:
                         "task_id": {"type": "string", "description": "Identifier of the fixing task (default: 'bugfix')."},
                         "repo_path": {"type": "string", "description": "Optional Git repository root path."},
                         "committer": {"type": "string", "description": "Agent persona applying the patch. Only 'Lead Orchestrator' is authorized (Single-Committer Gate).", "default": "Lead Orchestrator"},
+                        "committer_token": {"type": "string", "description": "Ephemeral capability session token issued to Lead Orchestrator for authorized patch application."},
                     },
                     "required": ["target_file", "patched_content"],
                 },
@@ -575,7 +633,7 @@ class BlueTeamMCPServer:
                             "enum": [
                                 "init_pipeline", "add_task", "update_task", "get_ready", "get_summary",
                                 "set_context", "get_context", "send_message", "get_inbox", "mark_processed",
-                                "check_drainage", "get_messages", "recover_orphans",
+                                "check_drainage", "get_messages", "recover_orphans", "issue_committer_token", "get_committer_token",
                             ],
                             "description": "Action to perform on DAG workflow or Mailbox.",
                         },

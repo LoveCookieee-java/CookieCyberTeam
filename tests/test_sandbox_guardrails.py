@@ -259,6 +259,276 @@ class TestSafePatchGuardrails(unittest.TestCase):
             )
             self.assertTrue(res["success"])
 
+    def test_polyglot_syntax_json_valid_and_invalid(self):
+        """Polyglot syntax check handles JSON files without invoking Python ast.parse."""
+        valid_json = '{\n  "version": "1.0",\n  "active": true,\n  "count": 42\n}\n'
+        invalid_json = '{\n  "version": "1.0",\n  "active": true,\n  "count": 42,\n}\n'  # trailing comma
+
+        # Valid JSON passes Gate 2
+        res = self.manager.check_syntax_and_zero_regression("", valid_json, file_path="config.json")
+        self.assertTrue(res["passed"])
+
+        # Invalid JSON fails Syntax Pre-Flight Gate
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_syntax_and_zero_regression("", invalid_json, file_path="config.json")
+        self.assertEqual(ctx.exception.gate_name, "Syntax Pre-Flight Gate")
+        self.assertIn("JSON", ctx.exception.message)
+
+    def test_polyglot_syntax_javascript_valid_and_invalid(self):
+        """Polyglot syntax check validates JS/TS code delimiters and quotes without Python ast.parse."""
+        valid_js = (
+            "function computeTotal(items) {\n"
+            "    // Return computed sum\n"
+            "    let total = 0;\n"
+            "    for (let i = 0; i < items.length; i++) {\n"
+            "        total += items[i];\n"
+            "    }\n"
+            "    return total;\n"
+            "}\n"
+        )
+        res = self.manager.check_syntax_and_zero_regression("", valid_js, file_path="utils.js")
+        self.assertTrue(res["passed"])
+
+        # Unclosed brace
+        broken_js_brace = "function broken() {\n    return true;\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_syntax_and_zero_regression("", broken_js_brace, file_path="utils.js")
+        self.assertEqual(ctx.exception.gate_name, "Syntax Pre-Flight Gate")
+        self.assertIn("Unclosed delimiter", ctx.exception.message)
+
+        # Mismatched bracket
+        broken_js_mismatch = "const arr = [1, 2, 3);\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_syntax_and_zero_regression("", broken_js_mismatch, file_path="utils.js")
+        self.assertEqual(ctx.exception.gate_name, "Syntax Pre-Flight Gate")
+        self.assertIn("Mismatched delimiter", ctx.exception.message)
+
+        # Unclosed string literal
+        broken_js_string = 'const msg = "unterminated string;\n'
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_syntax_and_zero_regression("", broken_js_string, file_path="utils.js")
+        self.assertEqual(ctx.exception.gate_name, "Syntax Pre-Flight Gate")
+        self.assertIn("Unclosed string literal", ctx.exception.message)
+
+    def test_polyglot_syntax_markdown_fences(self):
+        """Polyglot syntax check verifies balanced markdown code blocks."""
+        valid_md = "# Documentation\n\n```bash\nnpm install\n```\n"
+        res = self.manager.check_syntax_and_zero_regression("", valid_md, file_path="README.md")
+        self.assertTrue(res["passed"])
+
+        broken_md = "# Documentation\n\n```bash\nnpm install\n"
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_syntax_and_zero_regression("", broken_md, file_path="README.md")
+        self.assertEqual(ctx.exception.gate_name, "Syntax Pre-Flight Gate")
+        self.assertIn("code fence", ctx.exception.message)
+
+    def test_polyglot_syntax_js_template_nested_and_regex(self):
+        """Verify complex JS/TS features: nested template strings, object embeddings, and regex literals."""
+        # 1. Nested template string
+        nested_ts = 'const msg = `Hello ${user ? `Dr. ${user.name}` : "Guest"}!`;\n'
+        res = self.manager.check_syntax_and_zero_regression("", nested_ts, file_path="app.ts")
+        self.assertTrue(res["passed"])
+
+        # 2. Object with braces embedded in template expression
+        obj_ts = 'const config = `Config: ${{ port: 8080, host: "localhost" }}`;\n'
+        res2 = self.manager.check_syntax_and_zero_regression("", obj_ts, file_path="server.ts")
+        self.assertTrue(res2["passed"])
+
+        # 3. Regex literal with braces should not corrupt delimiter stack
+        regex_js = 'const re = /\\{(\\w+)\\}/g;\nconst isMatch = re.test(str);\n'
+        res3 = self.manager.check_syntax_and_zero_regression("", regex_js, file_path="regex.js")
+        self.assertTrue(res3["passed"])
+
+        # 4. Unclosed template expression fails
+        broken_template = 'const bad = `Hello ${user.name;\n'
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_syntax_and_zero_regression("", broken_template, file_path="broken.js")
+        self.assertEqual(ctx.exception.gate_name, "Syntax Pre-Flight Gate")
+        self.assertIn("template expression", ctx.exception.message)
+
+    def test_polyglot_syntax_go_raw_strings_and_chars(self):
+        """Verify Go raw string literals with backslashes and Java/C character escapes."""
+        # Go raw string with literal backslash
+        go_code = (
+            "package main\n"
+            "func main() {\n"
+            "    raw := `path\\to\\file`\n"
+            "    _ = raw\n"
+            "}\n"
+        )
+        res = self.manager.check_syntax_and_zero_regression("", go_code, file_path="main.go")
+        self.assertTrue(res["passed"])
+
+        # C / Java escaped char literal
+        c_code = (
+            "#include <stdio.h>\n"
+            "int main() {\n"
+            "    char quote = '\\'';\n"
+            "    char dquote = '\"';\n"
+            "    return 0;\n"
+            "}\n"
+        )
+        res_c = self.manager.check_syntax_and_zero_regression("", c_code, file_path="main.c")
+        self.assertTrue(res_c["passed"])
+
+    def test_polyglot_syntax_yaml(self):
+        """Verify YAML validation supports comments, unquoted words with apostrophes, and catches bad indentation."""
+        valid_yaml = (
+            "# System configuration\n"
+            "server:\n"
+            "  port: 8080\n"
+            "  description: Don't disable this service\n"
+            "  tags: [security, agent]\n"
+        )
+        res = self.manager.check_syntax_and_zero_regression("", valid_yaml, file_path="config.yaml")
+        self.assertTrue(res["passed"])
+
+        # Tabs for indentation are forbidden in YAML
+        tab_yaml = (
+            "server:\n"
+            "\tport: 8080\n"
+        )
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_syntax_and_zero_regression("", tab_yaml, file_path="config.yaml")
+        self.assertEqual(ctx.exception.gate_name, "Syntax Pre-Flight Gate")
+        self.assertIn("YAML", ctx.exception.message)
+        self.assertIn("syntax error", ctx.exception.message)
+
+    def test_polyglot_syntax_extensionless_files(self):
+        """Non-Python files without extension like Dockerfile and Makefile must not trigger Python SyntaxError."""
+        dockerfile_content = (
+            "FROM python:3.11-slim\n"
+            "WORKDIR /app\n"
+            "COPY . .\n"
+            "RUN pip install --no-cache-dir -r requirements.txt\n"
+            "CMD [\"python\", \"server.py\"]\n"
+        )
+        res = self.manager.check_syntax_and_zero_regression("", dockerfile_content, file_path="Dockerfile")
+        self.assertTrue(res["passed"])
+
+        makefile_content = (
+            "all:\n"
+            "    echo 'Building project'\n"
+        )
+        res_m = self.manager.check_syntax_and_zero_regression("", makefile_content, file_path="Makefile")
+        self.assertTrue(res_m["passed"])
+
+    def test_safe_patch_application_blocks_git_and_sensitive_targets(self):
+        """SafePatchManager.apply_safe_patch strictly rejects targeting .git or sensitive configuration."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # 1. Target inside .git
+            git_target = Path(tmpdir) / ".git" / "hooks" / "pre-commit"
+            with self.assertRaises(GuardrailViolation) as ctx:
+                self.manager.apply_safe_patch(
+                    git_target,
+                    "#!/bin/sh\necho evil\n",
+                    task_id="patch-sec-1",
+                )
+            self.assertIn(".git internal repository files", str(ctx.exception))
+
+            # 2. Target sensitive .env file
+            env_target = Path(tmpdir) / ".env"
+            with self.assertRaises(GuardrailViolation) as ctx2:
+                self.manager.apply_safe_patch(
+                    env_target,
+                    "SECRET_KEY=leaked\n",
+                    task_id="patch-sec-2",
+                )
+            self.assertIn("sensitive configuration file", str(ctx2.exception))
+
+    def test_new_file_scaffolding_threshold(self):
+        """New file creation allows up to 250 lines changed, while edits to existing files enforce 50 lines."""
+        # 1. New file creation: 100 lines (above 50, below 250) passes
+        new_file_content = "def step_%d():\n    pass\n" * 50  # 100 lines
+        stats = self.manager.check_diff_cap("", new_file_content, file_name="new_module.py")
+        self.assertTrue(stats["is_new_file"])
+        self.assertEqual(stats["effective_limit"], 250)
+        self.assertLessEqual(stats["total_changed"], 250)
+
+        # 2. New file creation exceeding 250 lines (e.g. 260 lines) fails
+        oversized_new_content = "x = 1\n" * 260
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_diff_cap("", oversized_new_content, file_name="large.py")
+        self.assertEqual(ctx.exception.gate_name, "Diff Cap Gate")
+        self.assertIn("New file scaffolding cap exceeded", ctx.exception.message)
+
+        # 3. Existing file modification enforces strict 50-line limit
+        existing_orig = "line\n" * 10
+        existing_mod = existing_orig + ("new_line\n" * 55)
+        with self.assertRaises(GuardrailViolation) as ctx:
+            self.manager.check_diff_cap(existing_orig, existing_mod, file_name="existing.py")
+        self.assertEqual(ctx.exception.gate_name, "Diff Cap Gate")
+        self.assertIn("Diff cap exceeded", ctx.exception.message)
+
+    def test_single_committer_session_token_lifecycle(self):
+        """Verify committer session token generation, validation, and enforcement lifecycle."""
+        # Unauthorized role cannot generate token
+        with self.assertRaises(GuardrailViolation):
+            self.manager.generate_committer_token("Patch Developer")
+
+        # Lead Orchestrator generates valid token
+        token = self.manager.generate_committer_token("Lead Orchestrator")
+        self.assertTrue(token.startswith("lead-token-"))
+        self.assertTrue(self.manager.validate_committer_token(token))
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir) / "patch_test.py"
+            tmp_path.write_text("a = 1\n", encoding="utf-8")
+
+            # With active tokens, applying patch without token fails
+            with self.assertRaises(GuardrailViolation) as ctx:
+                self.manager.apply_safe_patch(
+                    tmp_path,
+                    "a = 2\n",
+                    task_id="patch-token-1",
+                    committer="Lead Orchestrator",
+                )
+            self.assertIn("Missing or invalid session token", str(ctx.exception))
+
+            # Applying patch with wrong token fails
+            with self.assertRaises(GuardrailViolation) as ctx:
+                self.manager.apply_safe_patch(
+                    tmp_path,
+                    "a = 2\n",
+                    task_id="patch-token-2",
+                    committer="Lead Orchestrator",
+                    committer_token="fake-token-12345",
+                )
+            self.assertIn("Missing or invalid session token", str(ctx.exception))
+
+            # Non-Lead Orchestrator with valid token still fails
+            with self.assertRaises(GuardrailViolation) as ctx:
+                self.manager.apply_safe_patch(
+                    tmp_path,
+                    "a = 2\n",
+                    task_id="patch-token-3",
+                    committer="Patch Developer",
+                    committer_token=token,
+                )
+            self.assertIn("Single-Committer Gate Violation", str(ctx.exception))
+
+            # Lead Orchestrator with valid token succeeds
+            res = self.manager.apply_safe_patch(
+                tmp_path,
+                "a = 2\n",
+                task_id="patch-token-4",
+                committer="Lead Orchestrator",
+                committer_token=token,
+            )
+            self.assertTrue(res["success"])
+            self.assertTrue(res["token_verified"])
+
+            # Revoking token invalidates subsequent attempts
+            self.manager.revoke_committer_token(token)
+            with self.assertRaises(GuardrailViolation):
+                self.manager.apply_safe_patch(
+                    tmp_path,
+                    "a = 3\n",
+                    task_id="patch-token-5",
+                    committer="Lead Orchestrator",
+                    committer_token=token,
+                )
+
 
 class TestToolchainIndexer(unittest.TestCase):
 
