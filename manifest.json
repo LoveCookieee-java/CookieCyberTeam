@@ -1,0 +1,52 @@
+{
+  "manifest_version": "0.3",
+  "name": "cookie-cyber-team",
+  "display_name": "CookieCyberTeam",
+  "version": "1.0.0",
+  "description": "CookieCyberTeam MCP Security Guardrails and Multi-Agent Orchestration Server",
+  "author": {
+    "name": "CookieGli Security Team"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LoveCookieee-java/CookieCyberTeam.git"
+  },
+  "server": {
+    "type": "python",
+    "entry_point": "server.py",
+    "mcp_config": {
+      "command": "python",
+      "args": [
+        "${__dirname}/server.py",
+        "--stdio"
+      ],
+      "env": {
+        "CAPE_API_URL": "${user_config.cape_api_url}",
+        "CAPE_API_KEY": "${user_config.cape_api_key}"
+      }
+    }
+  },
+  "compatibility": {
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  },
+  "user_config": {
+    "cape_api_url": {
+      "type": "string",
+      "title": "CAPEv2 API URL",
+      "description": "Optional CAPEv2 or Cuckoo sandbox REST API URL for dynamic malware detonation",
+      "required": false,
+      "default": ""
+    },
+    "cape_api_key": {
+      "type": "string",
+      "title": "CAPEv2 API Key",
+      "description": "Optional API token for external CAPEv2 sandbox authentication",
+      "sensitive": true,
+      "required": false,
+      "default": ""
+    }
+  }
+}
