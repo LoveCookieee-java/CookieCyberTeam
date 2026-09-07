@@ -150,6 +150,12 @@ class ToolchainIndexer:
                     }
                 sanitized_args.append(a)
 
+        if not target_file:
+            return {
+                "success": False,
+                "error": "target_file parameter is required.",
+            }
+
         target_p = Path(target_file).resolve()
         if not target_p.is_file():
             return {

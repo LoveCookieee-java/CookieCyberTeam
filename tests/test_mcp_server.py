@@ -24,12 +24,12 @@ class TestMCPServer(unittest.TestCase):
         self.assertEqual(res["protocolVersion"], "2024-11-05")
         self.assertEqual(res["serverInfo"]["name"], "blue-team-security-guardrails")
 
-    def test_tools_list_all_seven(self):
-        """Verify all 7 core tools are registered."""
+    def test_tools_list_all_nine(self):
+        """Verify all 9 core tools are registered."""
         req = {"jsonrpc": "2.0", "id": 102, "method": "tools/list", "params": {}}
         resp = self.server.handle_request(req)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 7)
+        self.assertEqual(len(tools), 9)
         tool_names = {t["name"] for t in tools}
         expected = {
             "mcp_scan_vulnerabilities",
@@ -39,6 +39,8 @@ class TestMCPServer(unittest.TestCase):
             "mcp_orchestrate_dag",
             "mcp_search_code",
             "mcp_triage_binary",
+            "mcp_run_diagnostic_tool",
+            "mcp_submit_dynamic_sandbox",
         }
         self.assertEqual(tool_names, expected)
 
@@ -313,6 +315,113 @@ class TestMCPServer(unittest.TestCase):
         self.assertFalse(payload["success"])
         self.assertIn("not found", payload["error"])
         self.assertTrue(resp["result"]["isError"])
+
+    def test_tool_call_run_diagnostic_tool(self):
+        """Verify mcp_run_diagnostic_tool via JSON-RPC enforces whitelisting and argument sanitization."""
+        with tempfile.NamedTemporaryFile(suffix=".bin", delete=False) as tf:
+            tf.write(b"SAMPLE_BINARY_HEADER")
+            tf_path = tf.name
+
+        try:
+            # 1. Non-whitelisted tool rejected
+            req_bad = {
+                "jsonrpc": "2.0",
+                "id": 120,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_run_diagnostic_tool",
+                    "arguments": {"tool_name": "malicious_binary", "target_file": tf_path},
+                },
+            }
+            resp_bad = self.server.handle_request(req_bad)
+            data_bad = json.loads(resp_bad["result"]["content"][0]["text"])
+            self.assertFalse(data_bad["success"])
+            self.assertIn("whitelist", data_bad["error"])
+
+            # 2. Forbidden shell metacharacter rejected
+            req_meta = {
+                "jsonrpc": "2.0",
+                "id": 121,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_run_diagnostic_tool",
+                    "arguments": {
+                        "tool_name": "strings",
+                        "target_file": tf_path,
+                        "args": ["-a", "; rm -rf /"],
+                    },
+                },
+            }
+            resp_meta = self.server.handle_request(req_meta)
+            data_meta = json.loads(resp_meta["result"]["content"][0]["text"])
+            self.assertFalse(data_meta["success"])
+            self.assertIn("forbidden shell metacharacters", data_meta["error"])
+        finally:
+            Path(tf_path).unlink(missing_ok=True)
+
+    def test_tool_call_submit_dynamic_sandbox(self):
+        """Verify mcp_submit_dynamic_sandbox returns structured response and fallback guidance when unconfigured."""
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tf:
+            tf.write(b"MZ\x90\x00SAMPLE_PE")
+            tf_path = tf.name
+
+        try:
+            req = {
+                "jsonrpc": "2.0",
+                "id": 122,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_submit_dynamic_sandbox",
+                    "arguments": {"file_path": tf_path, "tags": "win10"},
+                },
+            }
+            resp = self.server.handle_request(req)
+            data = json.loads(resp["result"]["content"][0]["text"])
+            self.assertFalse(data["success"])
+            self.assertFalse(data["configured"])
+            self.assertIn("CAPE_API_URL", data["advisory"])
+            self.assertEqual(data["setup_guide"]["fallback_tool"], "mcp_triage_binary")
+        finally:
+            Path(tf_path).unlink(missing_ok=True)
+
+    def test_handle_call_tool_direct_dispatch(self):
+        """Verify server.handle_call_tool directly executes handlers and raises KeyError for unknown tools."""
+        # 1. Successful direct call to mcp_run_diagnostic_tool
+        res_diag = self.server.handle_call_tool(
+            "mcp_run_diagnostic_tool",
+            {"tool_name": "unwhitelisted_tool", "target_file": "dummy.exe"},
+        )
+        self.assertFalse(res_diag["success"])
+        self.assertIn("whitelist", res_diag["error"])
+
+        # 2. Successful direct call to mcp_submit_dynamic_sandbox
+        with tempfile.NamedTemporaryFile(suffix=".exe", delete=False) as tf:
+            tf.write(b"MZ\x90\x00")
+            tf_path = tf.name
+        try:
+            res_sb = self.server.handle_call_tool("mcp_submit_dynamic_sandbox", {"file_path": tf_path})
+            self.assertFalse(res_sb["success"])
+            self.assertFalse(res_sb["configured"])
+        finally:
+            Path(tf_path).unlink(missing_ok=True)
+
+        # 3. Unknown tool raises KeyError
+        with self.assertRaises(KeyError):
+            self.server.handle_call_tool("mcp_nonexistent_tool", {})
+
+    def test_prompts_contain_three_mandatory_user_advisories(self):
+        """Verify prompt templates contain Dual-Tier Sandbox, Zero-Execution, and File Safety Invariants."""
+        orch = self.server.get_prompt("mcp_prompt_orchestrator", {"issue_description": "CVE-2026-0001", "target_file": "main.py"})
+        orch_txt = orch["messages"][0]["content"]["text"]
+        self.assertIn("Dual-Tier Sandbox", orch_txt)
+        self.assertIn("Zero-Execution Policy", orch_txt)
+        self.assertIn("File Safety Invariant", orch_txt)
+
+        soc = self.server.get_prompt("mcp_prompt_soc_incident_responder", {"incident_description": "APT", "artifact_path": "apt.bin"})
+        soc_txt = soc["messages"][0]["content"]["text"]
+        self.assertIn("Dual-Tier Sandbox", soc_txt)
+        self.assertIn("Zero-Execution Policy", soc_txt)
+        self.assertIn("File Safety Invariant", soc_txt)
 
 
 if __name__ == "__main__":

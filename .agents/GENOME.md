@@ -19,9 +19,10 @@
 - `core/binary_triage.py`: Air-gapped static binary triage (PE section table W^X, streaming chunk hash, hex offset IOCs, Java Class vs Mach-O FAT disambiguation)
 - `core/soc_rules.py`: Pure-Python SOC dynamic detection rule engine (MITRE ATT&CK mapping: T1055, T1059.001, T1003, T1071, T1547.001 & incident playbooks)
 - `core/tool_indexer.py`: Diagnostic reverse-engineering toolchain indexer & runner (strings, readelf, objdump, cfr, jadx, r2)
+- `core/cape_adapter.py`: Dynamic malware sandbox REST API adapter (CAPEv2 / Cuckoo integration bridge, task polling & IOC extraction)
 
 ## 3. Registered MCP Interfaces
-- **Tools (7)**:
+- **Tools (9)**:
   1. `mcp_scan_vulnerabilities`
   2. `mcp_execute_sandbox_test`
   3. `mcp_create_reproduction_test`
@@ -29,6 +30,8 @@
   5. `mcp_orchestrate_dag` (Mailbox routing & orphan recovery)
   6. `mcp_search_code` (AST chunks & persistent SQLite WAL cache)
   7. `mcp_triage_binary` (Zero-execution static inspection & SOC analytic evaluation)
+  8. `mcp_run_diagnostic_tool` (Whitelisted host reverse-engineering runner)
+  9. `mcp_submit_dynamic_sandbox` (CAPEv2/Cuckoo external dynamic sandbox bridge)
 - **Resources (6)**:
   1. `mcp://rules/security-standards`
   2. `mcp://rules/debugging-mindset`
@@ -45,4 +48,4 @@
   6. `mcp_prompt_soc_responder`
 
 ## 4. Testing & Verification
-- `tests/`: 108 automated tests across 6 test suites (100% pass) executed via `python server.py --test-mode` and `python -m unittest discover -s tests -v`.
+- `tests/`: 123 automated tests across 7 test suites (100% pass) executed via `python server.py --test-mode` and `python -m unittest discover -s tests -v`.

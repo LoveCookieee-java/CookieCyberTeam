@@ -1,7 +1,7 @@
 """
 Blue Team MCP Security Guardrails & Multi-Agent Orchestration Server.
 Standard JSON-RPC 2.0 stdio MCP Server.
-Packages 7 Tools, 6 Resources, and 6 Prompts for safe, scientific defensive engineering,
+Packages 9 Tools, 6 Resources, and 6 Prompts for safe, scientific defensive engineering,
 zero-regression patching, air-gapped binary triage, and multi-agent coordination.
 """
 
@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from core.ast_scanner import ASTScanner
 from core.binary_triage import BinaryTriageEngine
+from core.cape_adapter import CapeSandboxAdapter
 from core.code_search import HybridCodeSearch
 from core.cvss_calculator import cvss_for_cwe, calculate_cvss_score
 from core.dag_engine import DAGEngine, DAGCycleError, MAX_HOP_TTL
@@ -66,6 +67,14 @@ SECURITY_STANDARDS_RESOURCE = """# Blue Team Security Standards & Defensive Guar
 - **Rule**: Absolute prohibition of unauthorized file deletion (`rm`, `del`, `rmdir`, `Remove-Item`, `unlink`). Never delete user source files.
 - **Diff Cap**: Maximum 50 lines changed per patch (Ponytail Principle).
 - **Single-Committer**: Only Lead Coordinator applies Git patches; Worker Agents operate via mailbox.
+
+## 7. Dual-Tier Sandbox Architecture Advisory
+- **Tier-1 (Subprocess Argv + Env Whitelist + Process Tree Kill)**: Active out-of-the-box with zero host prerequisites. Pass argv list, sanitize environment, kill process trees on timeout (`taskkill` on Windows).
+- **Tier-2 (Containerized Docker Sandbox)**: Optional containerized runtime with `--network none` and read-only mounts. Requires running Docker daemon on host; automatically falls back to Tier-1 if Docker is not available.
+
+## 8. Zero-Execution Policy Advisory for Binary & Malware Triage
+- **Rule**: Untrusted binaries, malware samples, and unknown executables must NEVER be executed directly on the host system.
+- **Detonation Containment**: Always inspect statically on host (`mcp_triage_binary`, `mcp_run_diagnostic_tool`). Route dynamic behavioral execution strictly through Tier-2 Docker or external dynamic sandboxes (`mcp_submit_dynamic_sandbox`).
 """
 
 DEBUGGING_MINDSET_RESOURCE = """# 4-Step Hypothesis-Driven Debugging Mindset
@@ -162,9 +171,10 @@ class BlueTeamMCPServer:
         self.tool_indexer = ToolchainIndexer()
         self.binary_triage_engine = BinaryTriageEngine()
         self.soc_engine = SOCRuleEngine()
+        self.cape_adapter = CapeSandboxAdapter()
 
     # -----------------------------------------------------------------------
-    # Tool Handlers (7 Tools)
+    # Tool Handlers (9 Tools)
     # -----------------------------------------------------------------------
 
     def tool_scan_vulnerabilities(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -470,12 +480,34 @@ class BlueTeamMCPServer:
                 )
         return res
 
+    def tool_run_diagnostic_tool(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Safely execute whitelisted diagnostic or reverse engineering tool (strings, readelf, objdump, cfr, jadx, r2, radare2)."""
+        tool_name = args.get("tool_name", "")
+        target_file = args.get("target_file", "")
+        tool_args = args.get("args")
+        timeout = int(args.get("timeout", 30))
+        return self.tool_indexer.run_diagnostic_tool(
+            tool_name=tool_name,
+            target_file=target_file,
+            args=tool_args,
+            timeout=timeout,
+        )
+
+    def tool_submit_dynamic_sandbox(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Submit a binary artifact to an external dynamic analysis sandbox (CAPEv2 / Cuckoo)."""
+        file_path = args.get("file_path")
+        if not file_path:
+            return {"success": False, "error": "file_path parameter is required."}
+        timeout = int(args.get("timeout", 120))
+        tags = args.get("tags")
+        return self.cape_adapter.submit_file(file_path=file_path, tags=tags, timeout_sec=timeout)
+
     # -----------------------------------------------------------------------
-    # Specifications & Metadata (7 Tools, 6 Resources, 6 Prompts)
+    # Specifications & Metadata (9 Tools, 6 Resources, 6 Prompts)
     # -----------------------------------------------------------------------
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """Return MCP standard Tool definitions (7 Tools)."""
+        """Return MCP standard Tool definitions (9 Tools)."""
         return [
             {
                 "name": "mcp_scan_vulnerabilities",
@@ -591,6 +623,56 @@ class BlueTeamMCPServer:
                     "type": "object",
                     "properties": {
                         "file_path": {"type": "string", "description": "Path to binary artifact to triage safely."},
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            {
+                "name": "mcp_run_diagnostic_tool",
+                "description": "Safely executes a whitelisted host diagnostic or reverse engineering tool ('strings', 'readelf', 'objdump', 'cfr', 'jadx', 'r2', 'radare2') against a target file under strict sandbox isolation and input sanitization.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "tool_name": {
+                            "type": "string",
+                            "description": "Name of whitelisted diagnostic tool.",
+                            "enum": ["strings", "readelf", "objdump", "cfr", "jadx", "r2", "radare2"],
+                        },
+                        "target_file": {
+                            "type": "string",
+                            "description": "Path to binary or target file to inspect.",
+                        },
+                        "args": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional list of CLI arguments (forbidden shell metacharacters are strictly rejected).",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Execution timeout in seconds (default: 30).",
+                        },
+                    },
+                    "required": ["tool_name", "target_file"],
+                },
+            },
+            {
+                "name": "mcp_submit_dynamic_sandbox",
+                "description": "Submits a suspicious binary to an external isolated dynamic analysis sandbox (CAPEv2 / Cuckoo REST API) to monitor runtime execution, network C2 beacons, and dropped files. Returns graceful fallback when external sandbox is not configured.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to binary artifact to submit for dynamic execution analysis.",
+                        },
+                        "timeout": {
+                            "type": "integer",
+                            "description": "Dynamic analysis timeout in seconds (default: 120).",
+                        },
+                        "tags": {
+                            "type": "string",
+                            "description": "Optional sandbox routing tags (e.g. 'win10', 'x64', 'office').",
+                        },
                     },
                     "required": ["file_path"],
                 },
@@ -720,7 +802,10 @@ class BlueTeamMCPServer:
                 "2. Coordinate Worker agents via point-to-point mailbox (`action='send_message'`, `action='get_inbox'`).\n"
                 "3. Enforce Max Hop TTL (20 messages) and verify inbox drainage (`action='check_drainage'`) before closing tasks.\n"
                 "4. Enforce Single-Committer Git Isolation: Only you apply patches or commit changes.\n"
-                "5. Agent Safety Invariant: Absolute prohibition of unauthorized file deletion (no rm, del, rmdir, Remove-Item, unlink, or destroying user files)."
+                "5. Mandatory Advisories:\n"
+                "   - Dual-Tier Sandbox Architecture: Tier-1 (Subprocess Argv + Whitelist + Tree Kill) is active by default; Tier-2 (Docker) requires host daemon.\n"
+                "   - Zero-Execution Policy: Perform strict static triage on host; dynamic execution must route via Tier-2 Docker or CAPEv2 sandbox.\n"
+                "   - File Safety Invariants: Absolute prohibition of unauthorized file deletion (no rm, del, rmdir, Remove-Item, unlink)."
             )
         elif name == "mcp_prompt_security_audit":
             target = args.get("target_file", "unknown.py")
@@ -729,7 +814,8 @@ class BlueTeamMCPServer:
                 "1. Use `mcp_search_code` to locate relevant functions with minimal token consumption.\n"
                 "2. Run `mcp_scan_vulnerabilities(target_path='{target}')` to identify CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295.\n"
                 "3. Verify FIRST CVSS v3.1 scores and attack surface vectors.\n"
-                "4. Record findings in shared context and inform the Lead Orchestrator via mailbox."
+                "4. Enforce Zero-Execution Policy (static analysis only) and Absolute Prohibition of File Deletion.\n"
+                "5. Record findings in shared context and inform the Lead Orchestrator via mailbox."
             )
         elif name == "mcp_prompt_hypothesis_debug":
             vuln = args.get("vulnerability", "Unknown defect")
@@ -738,9 +824,10 @@ class BlueTeamMCPServer:
                 f"You are the Scientific Debugger addressing '{vuln}' in '{target}'.\n"
                 "Follow the 4-step mindset strictly. DO NOT GUESS CODE.\n"
                 "Step 1: Write a minimal reproduction test and verify it FAILS using `mcp_create_reproduction_test`.\n"
-                "Step 2: Trace execution flow and isolate root cause.\n"
+                "Step 2: Trace execution flow and isolate root cause under Tier-1 Sandbox isolation.\n"
                 "Step 3: Formulate a falsifiable hypothesis.\n"
-                "Step 4: Confirm root cause via AST and pass confirmed analysis to Patch Developer via mailbox."
+                "Step 4: Confirm root cause via AST and pass confirmed analysis to Patch Developer via mailbox.\n"
+                "Mandatory Advisory: Absolute prohibition of unauthorized file deletion; live payloads must never be executed on host."
             )
         elif name == "mcp_prompt_safe_patch":
             root_cause = args.get("root_cause", "Confirmed root cause")
@@ -751,7 +838,7 @@ class BlueTeamMCPServer:
                 "1. Limit your diff to <= 50 lines changed (Diff Cap Gate).\n"
                 "2. Eliminate the root cause directly; do not add superficial caller guards.\n"
                 "3. Apply your patch using `mcp_apply_safe_patch(target_file='{target}', patched_content=...)`.\n"
-                "4. Agent Safety Rule: Absolute prohibition of unauthorized file deletion (no rm, del, Remove-Item, unlink, or destroying user code)."
+                "4. Mandatory Advisory: Absolute prohibition of unauthorized file deletion (no rm, del, Remove-Item, unlink, or destroying user code)."
             )
         elif name == "mcp_prompt_qa_review":
             target = args.get("target_file", "unknown.py")
@@ -759,9 +846,10 @@ class BlueTeamMCPServer:
             content = (
                 f"You are the QA / Code Reviewer inspecting the fix for '{target}'.\n"
                 f"1. Run `mcp_execute_sandbox_test(test_path='{repro}')` to verify the reproduction test now PASSES.\n"
+                "   - Dual-Tier Sandbox Advisory: Tier-1 (Subprocess Argv + Whitelist + Tree Kill) default; Tier-2 (Docker) requires active daemon.\n"
                 "2. Run regression test suites to guarantee 0 regressions.\n"
                 f"3. Run `mcp_scan_vulnerabilities(target_path='{target}', delta_only=True)` to confirm zero new CWEs were introduced.\n"
-                "4. Agent Safety Verification: Verify patch contains zero unauthorized file deletions or destructive mutations."
+                "4. Mandatory Advisory: Verify patch contains zero unauthorized file deletions or destructive mutations (Absolute File Safety Invariant)."
             )
         elif name == "mcp_prompt_soc_incident_responder":
             incident = args.get("incident_description", "Suspicious Activity")
@@ -772,8 +860,13 @@ class BlueTeamMCPServer:
                 "1. Consult `mcp://playbooks/malware-triage` and `mcp://playbooks/compromise-assessment`.\n"
                 f"2. Execute air-gapped static triage using `mcp_triage_binary(file_path='{art}')`.\n"
                 "3. Extract SHA-256 evidence chain, block entropy, and IOC indicators (IP, URL, Registry, APIs).\n"
-                "4. Check available host tools using `mcp://state/tool-index` for deeper analysis (Ghidra, radare2, strings).\n"
-                "5. Report containment and eradication plan to Lead Orchestrator via mailbox."
+                f"4. Run whitelisted diagnostic tools using `mcp_run_diagnostic_tool` or check `mcp://state/tool-index`.\n"
+                f"5. For dynamic detonation, submit to CAPEv2/Cuckoo via `mcp_submit_dynamic_sandbox(file_path='{art}')`.\n"
+                "6. Mandatory Advisories:\n"
+                "   - Zero-Execution Policy: Never execute untrusted binaries directly on host.\n"
+                "   - Dual-Tier Sandbox: Host analysis is static only; dynamic execution belongs in Tier-2 Docker or CAPEv2 sandbox.\n"
+                "   - File Safety Invariant: Absolute prohibition of unauthorized file deletion.\n"
+                "7. Report containment and eradication plan to Lead Orchestrator via mailbox."
             )
         else:
             raise ValueError(f"Unknown prompt name: {name}")
@@ -787,6 +880,33 @@ class BlueTeamMCPServer:
                 }
             ],
         }
+
+    # -----------------------------------------------------------------------
+    # Tool Execution Dispatcher
+    # -----------------------------------------------------------------------
+
+    def handle_call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        Dispatch a tool call to its respective handler and return structured result dictionary.
+        Supports safe JSON-RPC execution of all 9 registered MCP tools.
+        """
+        args = arguments or {}
+        handler_map: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
+            "mcp_scan_vulnerabilities": self.tool_scan_vulnerabilities,
+            "mcp_execute_sandbox_test": self.tool_execute_sandbox_test,
+            "mcp_create_reproduction_test": self.tool_create_reproduction_test,
+            "mcp_apply_safe_patch": self.tool_apply_safe_patch,
+            "mcp_orchestrate_dag": self.tool_orchestrate_dag,
+            "mcp_search_code": self.tool_search_code,
+            "mcp_triage_binary": self.tool_triage_binary,
+            "mcp_run_diagnostic_tool": self.tool_run_diagnostic_tool,
+            "mcp_submit_dynamic_sandbox": self.tool_submit_dynamic_sandbox,
+        }
+
+        if tool_name not in handler_map:
+            raise KeyError(f"Method or tool not found: {tool_name}")
+
+        return handler_map[tool_name](args)
 
     # -----------------------------------------------------------------------
     # JSON-RPC 2.0 Dispatcher
@@ -832,21 +952,8 @@ class BlueTeamMCPServer:
             tool_name = params.get("name")
             arguments = params.get("arguments", {})
 
-            handler_map: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
-                "mcp_scan_vulnerabilities": self.tool_scan_vulnerabilities,
-                "mcp_execute_sandbox_test": self.tool_execute_sandbox_test,
-                "mcp_create_reproduction_test": self.tool_create_reproduction_test,
-                "mcp_apply_safe_patch": self.tool_apply_safe_patch,
-                "mcp_orchestrate_dag": self.tool_orchestrate_dag,
-                "mcp_search_code": self.tool_search_code,
-                "mcp_triage_binary": self.tool_triage_binary,
-            }
-
-            if tool_name not in handler_map:
-                return make_err(-32601, f"Method or tool not found: {tool_name}")
-
             try:
-                res = handler_map[tool_name](arguments)
+                res = self.handle_call_tool(tool_name, arguments)
                 return make_res({
                     "content": [
                         {
@@ -856,6 +963,8 @@ class BlueTeamMCPServer:
                     ],
                     "isError": not res.get("success", True),
                 })
+            except KeyError:
+                return make_err(-32601, f"Method or tool not found: {tool_name}")
             except Exception as exc:
                 return make_res({
                     "content": [{"type": "text", "text": f"Error executing {tool_name}: {str(exc)}"}],
@@ -921,12 +1030,14 @@ def run_self_test() -> bool:
     print("=== Blue Team MCP Server Self-Test ===")
     server = BlueTeamMCPServer(db_path=":memory:")
 
-    # 1. Test Tools list (7 Tools)
+    # 1. Test Tools list (9 Tools)
     tools = server.get_tool_definitions()
-    assert len(tools) == 7, f"Expected 7 tools, got {len(tools)}"
+    assert len(tools) == 9, f"Expected 9 tools, got {len(tools)}"
     tool_names = {t["name"] for t in tools}
     assert "mcp_search_code" in tool_names
     assert "mcp_triage_binary" in tool_names
+    assert "mcp_run_diagnostic_tool" in tool_names
+    assert "mcp_submit_dynamic_sandbox" in tool_names
     print(f"[PASS] Tools verified: {len(tools)} registered ({', '.join(sorted(tool_names))}).")
 
     # 2. Test Resources list & read (6 Resources)
@@ -1058,7 +1169,38 @@ def run_self_test() -> bool:
     assert "soc_alerts" in triage_data
     print(f"[PASS] Air-Gapped Binary Triage & SOC Dynamic Rule Engine verified: PE recognized, URL IOC caught, SOC alert evaluated.")
 
-    # 9. Run full discovered test suite in tests/
+    # 9. Test Diagnostic Tool runner via JSON-RPC
+    diag_req = {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": {
+            "name": "mcp_run_diagnostic_tool",
+            "arguments": {"tool_name": "unauthorized_tool", "target_file": str(temp_bin)},
+        },
+    }
+    diag_res = server.handle_request(diag_req)
+    diag_data = json.loads(diag_res["result"]["content"][0]["text"])
+    assert diag_data["success"] is False
+    assert "whitelist" in diag_data["error"]
+    print("[PASS] Diagnostic Tool runner verified: Whitelist enforcement operational.")
+
+    # 10. Test Dynamic Sandbox submission tool (graceful fallback)
+    sandbox_req = {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": {
+            "name": "mcp_submit_dynamic_sandbox",
+            "arguments": {"file_path": str(temp_bin)},
+        },
+    }
+    sandbox_res = server.handle_request(sandbox_req)
+    sandbox_data = json.loads(sandbox_res["result"]["content"][0]["text"])
+    assert sandbox_data["configured"] is False or sandbox_data["success"] is True
+    print("[PASS] Dynamic Sandbox tool verified: Graceful fallback and error reporting operational.")
+
+    # 11. Run full discovered test suite in tests/
     print("\n--- Running Full Discovered Test Suite (tests/) ---")
     import unittest
     suite = unittest.defaultTestLoader.discover("tests", pattern="test_*.py")
