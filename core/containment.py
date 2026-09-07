@@ -184,9 +184,12 @@ def restore_quarantined_file(
     destination_path: Optional[Union[str, Path]] = None,
     workspace_root: Optional[Union[str, Path]] = None,
 ) -> Dict[str, Any]:
-    """Restore and de-obfuscate an artifact from the quarantine vault."""
-    ws = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
-    vault = Path(quarantine_dir).resolve() if quarantine_dir else ws / ".quarantine"
+    if quarantine_dir:
+        vault = Path(quarantine_dir).resolve()
+        ws = Path(workspace_root).resolve() if workspace_root else (find_git_root(vault) or vault.parent)
+    else:
+        ws = Path(workspace_root).resolve() if workspace_root else (find_git_root(Path.cwd()) or Path.cwd())
+        vault = ws / ".quarantine"
     manifest_path = vault / "quarantine_manifest.json"
 
     if not manifest_path.is_file():
@@ -200,7 +203,11 @@ def restore_quarantined_file(
     item = items[quarantine_id]
     enc_path = Path(item["quarantine_path"])
     if not enc_path.is_file():
-        return {"success": False, "error": f"Encrypted file not found on disk: {enc_path}"}
+        vault_candidate = vault / enc_path.name
+        if vault_candidate.is_file():
+            enc_path = vault_candidate
+        else:
+            return {"success": False, "error": f"Encrypted file not found on disk: {enc_path}"}
 
     # Restore target path
     target = Path(destination_path).resolve() if destination_path else Path(item["original_path"]).resolve()
@@ -231,10 +238,13 @@ def restore_quarantined_file(
 
     target.write_bytes(restored_bytes)
 
-    # Update manifest
+    # Update manifest atomically via temporary file
     item["status"] = "restored"
     item["restored_to"] = str(target)
-    manifest_path.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
+    manifest_data["last_updated"] = datetime.now(timezone.utc).isoformat()
+    tmp_manifest = vault / f".tmp_restore_{quarantine_id}.json"
+    tmp_manifest.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
+    os.replace(tmp_manifest, manifest_path)
 
     return {
         "success": True,
@@ -422,21 +432,31 @@ def terminate_suspicious_process(pid: int, force: bool = True) -> Dict[str, Any]
                 "error": f"Permission denied terminating PID {target_pid}.",
             }
 
-        # Discover child processes to terminate entire subtree
-        child_pids: List[int] = []
-        try:
-            pgrep_res = subprocess.run(
-                ["pgrep", "-P", str(target_pid)],
-                capture_output=True,
-                text=True,
-                shell=False,
-            )
-            if pgrep_res.returncode == 0:
-                child_pids = [int(p) for p in pgrep_res.stdout.split() if p.isdigit()]
-        except Exception:
-            pass
+        # Discover child processes recursively to terminate entire subtree
+        all_pids = [target_pid]
+        to_visit = [target_pid]
+        seen = {target_pid}
+        while to_visit:
+            curr = to_visit.pop()
+            try:
+                pgrep_res = subprocess.run(
+                    ["pgrep", "-P", str(curr)],
+                    capture_output=True,
+                    text=True,
+                    shell=False,
+                )
+                if pgrep_res.returncode == 0:
+                    for p in pgrep_res.stdout.split():
+                        if p.isdigit():
+                            ipid = int(p)
+                            if ipid not in seen:
+                                seen.add(ipid)
+                                all_pids.append(ipid)
+                                to_visit.append(ipid)
+            except Exception:
+                break
 
-        all_pids = child_pids + [target_pid]
+        child_pids = [p for p in all_pids if p != target_pid]
 
         # Stage 1: Graceful termination via SIGTERM
         for p in all_pids:

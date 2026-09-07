@@ -221,6 +221,9 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 if isinstance(stmt, ast.Try):
                     for h in stmt.handlers:
                         stack.extend(h.body)
+            elif hasattr(ast, "Match") and isinstance(stmt, ast.Match):
+                for case in stmt.cases:
+                    stack.extend(case.body)
         return globals_found, nonlocals_found
 
     def _push_function_scope(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
@@ -1056,7 +1059,12 @@ class ASTScanner:
             return []
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
-        code_content = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            import tokenize
+            with tokenize.open(path) as f:
+                code_content = f.read()
+        except Exception:
+            code_content = path.read_text(encoding="utf-8", errors="replace")
         return self.scan_code(code_content, file_path=str(path), modified_lines=modified_lines)
 
     def scan_git_diff(

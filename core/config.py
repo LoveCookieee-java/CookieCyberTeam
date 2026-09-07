@@ -43,6 +43,30 @@ def _strip_toml_comment(s: str) -> str:
     return s.strip()
 
 
+def _bracket_balance(s: str) -> int:
+    """Return net bracket depth [ vs ] outside string quotes."""
+    bal = 0
+    in_q = None
+    esc = False
+    for ch in s:
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if in_q:
+            if ch == in_q:
+                in_q = None
+        elif ch in ('"', "'"):
+            in_q = ch
+        elif ch == "[":
+            bal += 1
+        elif ch == "]":
+            bal -= 1
+    return bal
+
+
 def _parse_simple_toml(text: str) -> Dict[str, Any]:
     """
     Lightweight, pure-Python TOML parser for basic key-value pairs, arrays, and tables.
@@ -51,9 +75,15 @@ def _parse_simple_toml(text: str) -> Dict[str, Any]:
     result: Dict[str, Any] = {}
     current_table = result
 
-    for raw_line in text.splitlines():
+    lines = text.splitlines()
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        raw_line = lines[i]
         line = raw_line.strip()
         if not line or line.startswith("#"):
+            i += 1
             continue
 
         # Table header: [section] or [section.subsection]
@@ -66,6 +96,7 @@ def _parse_simple_toml(text: str) -> Dict[str, Any]:
                     curr[p] = {}
                 curr = curr[p]
             current_table = curr
+            i += 1
             continue
 
         if "=" in line:
@@ -73,8 +104,19 @@ def _parse_simple_toml(text: str) -> Dict[str, Any]:
             key = key.strip()
             val_str = _strip_toml_comment(val_str)
 
+            # Buffer multi-line arrays
+            bal = _bracket_balance(val_str)
+            while bal > 0 and i + 1 < n:
+                i += 1
+                next_line = _strip_toml_comment(lines[i].strip())
+                if next_line:
+                    val_str += " " + next_line
+                    bal += _bracket_balance(next_line)
+
             val = _parse_toml_value(val_str)
             current_table[key] = val
+
+        i += 1
 
     return result
 
@@ -101,10 +143,43 @@ def _parse_toml_value(val_str: str) -> Any:
         if not inner:
             return []
         items = []
-        for item in inner.split(","):
-            item_clean = item.strip()
-            if item_clean:
-                items.append(_parse_toml_value(item_clean))
+        current_item: List[str] = []
+        in_quote = None
+        escaped = False
+        bracket_depth = 0
+        for ch in inner:
+            if escaped:
+                current_item.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                escaped = True
+                current_item.append(ch)
+                continue
+            if in_quote:
+                current_item.append(ch)
+                if ch == in_quote:
+                    in_quote = None
+            else:
+                if ch in ('"', "'"):
+                    in_quote = ch
+                    current_item.append(ch)
+                elif ch == "[":
+                    bracket_depth += 1
+                    current_item.append(ch)
+                elif ch == "]":
+                    bracket_depth -= 1
+                    current_item.append(ch)
+                elif ch == "," and bracket_depth == 0:
+                    item_str = "".join(current_item).strip()
+                    if item_str:
+                        items.append(_parse_toml_value(item_str))
+                    current_item = []
+                else:
+                    current_item.append(ch)
+        last_str = "".join(current_item).strip()
+        if last_str:
+            items.append(_parse_toml_value(last_str))
         return items
 
     # Integers

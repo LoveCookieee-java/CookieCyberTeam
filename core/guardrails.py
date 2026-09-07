@@ -583,6 +583,8 @@ class SafePatchManager:
         enforce_token: bool = False,
         config: Optional[BlueTeamConfig] = None,
         restricted_branches: Optional[Set[str]] = None,
+        workspace_root: Optional[Union[str, Path]] = None,
+        allowed_roots: Optional[List[Union[str, Path]]] = None,
     ):
         self.config = config or BlueTeamConfig()
         self.diff_cap = diff_cap if diff_cap is not None else self.config.diff_cap_limit
@@ -590,6 +592,11 @@ class SafePatchManager:
         self.restricted_branches = (
             {b.lower() for b in restricted_branches} if restricted_branches is not None
             else set(self.config.restricted_branches)
+        )
+        self.workspace_root = Path(workspace_root).resolve() if workspace_root else None
+        self.allowed_roots = (
+            [Path(r).resolve() for r in allowed_roots] if allowed_roots is not None
+            else ([self.workspace_root] if self.workspace_root else None)
         )
         self.scanner = ASTScanner(config=self.config)
         self.semgrep = semgrep or SemgrepAdapter()
@@ -824,7 +831,11 @@ class SafePatchManager:
         # 0. Gate 0: Single-Committer Gate
         committer_stats = self.check_single_committer(committer, committer_token=committer_token)
 
-        target = Path(target_file_path).resolve()
+        raw_target = Path(target_file_path)
+        if not raw_target.is_absolute() and self.workspace_root:
+            target = (self.workspace_root / raw_target).resolve()
+        else:
+            target = raw_target.resolve()
 
         # Security: Prevent writing inside .git directory or sensitive files
         lower_parts = [p.lower() for p in target.parts]
@@ -841,6 +852,23 @@ class SafePatchManager:
                 message=f"Cannot apply patch to sensitive configuration file '{target.name}'.",
                 details={"target_file": str(target)},
             )
+
+        # Boundary check: Ensure target does not escape specified repo_path or workspace_root
+        if repo_path:
+            repo_resolved = Path(repo_path).resolve()
+            if not (target == repo_resolved or repo_resolved in target.parents):
+                raise GuardrailViolation(
+                    gate_name="Git Branch Isolation Gate",
+                    message=f"Path traversal violation: Target file '{target}' is outside repository root '{repo_resolved}'.",
+                    details={"target_file": str(target), "repo_path": str(repo_resolved)},
+                )
+        elif self.allowed_roots:
+            if not any(target == r or r in target.parents for r in self.allowed_roots):
+                raise GuardrailViolation(
+                    gate_name="Git Branch Isolation Gate",
+                    message=f"Path traversal violation: Target file '{target}' is outside allowed workspace root: {self.workspace_root}",
+                    details={"target_file": str(target)},
+                )
 
         is_new_file = not target.exists()
         original_code = ""

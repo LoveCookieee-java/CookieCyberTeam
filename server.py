@@ -1,7 +1,7 @@
 """
 Blue Team MCP Security Guardrails & Multi-Agent Orchestration Server.
 Standard JSON-RPC 2.0 stdio MCP Server.
-Packages 9 Tools, 6 Resources, and 6 Prompts for safe, scientific defensive engineering,
+Packages 11 Tools, 6 Resources, and 6 Prompts for safe, scientific defensive engineering,
 zero-regression patching, air-gapped binary triage, and multi-agent coordination.
 """
 
@@ -184,7 +184,13 @@ class BlueTeamMCPServer:
         self.scanner = ASTScanner(config=self.config)
         self.semgrep = SemgrepAdapter()
         self.sandbox = SandboxRunner()
-        self.patch_manager = SafePatchManager(config=self.config, semgrep=self.semgrep, enforce_token=True)
+        self.patch_manager = SafePatchManager(
+            config=self.config,
+            semgrep=self.semgrep,
+            enforce_token=True,
+            workspace_root=self.workspace_root,
+            allowed_roots=self.allowed_roots,
+        )
         self.dag_engine = DAGEngine(db_path=db_path)
         self.code_searcher = HybridCodeSearch()
         self.tool_indexer = ToolchainIndexer()
@@ -376,9 +382,26 @@ class BlueTeamMCPServer:
         if not target_file or patched_content is None:
             return {"success": False, "error": "target_file and patched_content are required."}
 
+        raw_path = Path(target_file)
+        if not raw_path.is_absolute():
+            resolved_target = (self.workspace_root / raw_path).resolve()
+        else:
+            resolved_target = raw_path.resolve()
+
+        is_confined = any(resolved_target == root or root in resolved_target.parents for root in self.allowed_roots)
+        if not is_confined:
+            return {
+                "success": False,
+                "violation": True,
+                "gate": "Git Branch Isolation Gate",
+                "message": f"Path traversal violation: Target '{target_file}' resolves outside allowed workspace root: {self.workspace_root}",
+                "details": {"target_file": str(resolved_target)},
+            }
+        effective_target = resolved_target
+
         try:
             res = self.patch_manager.apply_safe_patch(
-                target_file_path=target_file,
+                target_file_path=effective_target,
                 patched_content=patched_content,
                 task_id=task_id,
                 repo_path=repo_path,
@@ -1062,7 +1085,7 @@ class BlueTeamMCPServer:
     def handle_call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Dispatch a tool call to its respective handler and return structured result dictionary.
-        Supports safe JSON-RPC execution of all 9 registered MCP tools.
+        Supports safe JSON-RPC execution of all 11 registered MCP tools.
         """
         args = arguments or {}
         handler_map: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
@@ -1199,6 +1222,13 @@ class BlueTeamMCPServer:
                 }
                 sys.stdout.write(json.dumps(err_resp) + "\n")
                 sys.stdout.flush()
+
+    def close(self) -> None:
+        """Release database connections and resources."""
+        if hasattr(self, "code_searcher"):
+            self.code_searcher.close()
+        if hasattr(self, "dag_engine"):
+            self.dag_engine.close()
 
 
 def run_self_test() -> bool:

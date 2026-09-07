@@ -253,6 +253,54 @@ class TestContainment(unittest.TestCase):
         self.assertIn("out to 198.51.100.5 port 8080", res["linux_ufw"])
         self.assertIn("from 198.51.100.5 port 8080", res["linux_ufw"])
 
+    def test_restore_quarantined_file_with_quarantine_dir_and_default_ws(self):
+        """Verify restore_quarantined_file executes properly when workspace_root is not explicitly provided."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ws = Path(tmp_dir)
+            sample = ws / "test_file.bin"
+            sample.write_bytes(b"HELLO_RESTORATION")
+            vault = ws / ".custom_vault"
+            q_res = quarantine_file(file_path=sample, quarantine_dir=vault, workspace_root=ws)
+            self.assertTrue(q_res["success"])
+
+            # Call restore passing quarantine_dir without workspace_root
+            dest = ws / "restored_test.bin"
+            rest_res = restore_quarantined_file(
+                quarantine_id=q_res["quarantine_id"],
+                quarantine_dir=vault,
+                destination_path=dest,
+            )
+            self.assertTrue(rest_res["success"])
+            self.assertTrue(dest.is_file())
+            self.assertEqual(dest.read_bytes(), b"HELLO_RESTORATION")
+
+    def test_restore_quarantined_file_relocated_vault(self):
+        """Verify restore succeeds even if quarantine vault directory was moved and manifest paths are outdated."""
+        with tempfile.TemporaryDirectory() as tmp_dir1, tempfile.TemporaryDirectory() as tmp_dir2:
+            ws1 = Path(tmp_dir1)
+            sample = ws1 / "payload.bin"
+            sample.write_bytes(b"RELOCATED_TEST_BYTES")
+            vault1 = ws1 / ".quarantine"
+            q_res = quarantine_file(file_path=sample, quarantine_dir=vault1, workspace_root=ws1)
+            self.assertTrue(q_res["success"])
+
+            # Move vault files to new location
+            ws2 = Path(tmp_dir2)
+            vault2 = ws2 / ".quarantine_relocated"
+            vault2.mkdir(parents=True, exist_ok=True)
+            for f in vault1.iterdir():
+                (vault2 / f.name).write_bytes(f.read_bytes())
+
+            dest2 = ws2 / "restored_from_relocated.bin"
+            rest_res = restore_quarantined_file(
+                quarantine_id=q_res["quarantine_id"],
+                quarantine_dir=vault2,
+                destination_path=dest2,
+                workspace_root=ws2,
+            )
+            self.assertTrue(rest_res["success"])
+            self.assertEqual(dest2.read_bytes(), b"RELOCATED_TEST_BYTES")
+
 
 if __name__ == "__main__":
     unittest.main()

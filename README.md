@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://github.com/LoveCookieee-java/CookieCyberTeam"><img src="https://img.shields.io/badge/Release-v1.3.0-blue.svg?style=flat-square" alt="Release"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="#verification--testing"><img src="https://img.shields.io/badge/Tests-202%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
+  <a href="#verification--testing"><img src="https://img.shields.io/badge/Tests-220%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
   <a href="#safety-invariants--policies"><img src="https://img.shields.io/badge/Safety-Air--Gapped%20Zero--Execution-red.svg?style=flat-square" alt="Safety"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License"></a>
@@ -429,7 +429,7 @@ python server.py --stdio
 [PASS] Containment Rule Generator tool verified: Windows/Linux/DNS rules generated
 [PASS] Artifact Quarantine tool verified: Sample atomically moved into vault and encrypted
 ----------------------------------------------------------------------
-Ran 202 tests in 3.435s
+Ran 220 tests in 3.639s
 OK (100% Passed, 0 Failures, 0 Errors)
 ```
 

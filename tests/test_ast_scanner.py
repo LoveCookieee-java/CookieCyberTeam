@@ -2,6 +2,8 @@
 Unit tests for Pure-Python AST SAST Scanner & Semgrep Adapter.
 """
 
+import ast
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -636,6 +638,50 @@ class TestASTScanner(unittest.TestCase):
         self.assertRegex(rule["name"], r"^[A-Za-z0-9_]+$")
         result = sarif["runs"][0]["results"][0]
         self.assertEqual(result["ruleIndex"], 0)
+
+    @unittest.skipUnless(hasattr(ast, "Match"), "ast.Match requires Python 3.10+")
+    def test_match_case_scope_hoisting_nonlocal(self):
+        """Verify global and nonlocal declarations inside pattern matching blocks are discovered."""
+        code = (
+            "import os\n"
+            "def outer(action):\n"
+            "    cmd = 'echo safe'\n"
+            "    def inner(val):\n"
+            "        match val:\n"
+            "            case 1:\n"
+            "                nonlocal cmd\n"
+            "                cmd = f'rm {val}'\n"
+            "            case _:\n"
+            "                pass\n"
+            "        os.system(cmd)\n"
+            "    inner(1)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe78 = [f for f in findings if f.cwe_id == "CWE-78"]
+        self.assertEqual(len(cwe78), 1)
+        self.assertEqual(cwe78[0].line_number, 11)
+
+    def test_scan_file_pep263_coding_cookie_and_non_utf8(self):
+        """Verify scan_file parses Python files with PEP 263 Latin-1 coding cookie correctly."""
+        code_bytes = (
+            b"# -*- coding: latin-1 -*-\n"
+            b"# Comment with Latin-1 character: \xe9\n"
+            b"import os\n"
+            b"def run(cmd):\n"
+            b"    os.system(cmd)\n"
+        )
+        with tempfile.NamedTemporaryFile(suffix=".py", delete=False) as tf:
+            tf.write(code_bytes)
+            tf_path = Path(tf.name)
+        try:
+            findings = self.scanner.scan_file(tf_path)
+            cwe78 = [f for f in findings if f.cwe_id == "CWE-78"]
+            self.assertEqual(len(cwe78), 1)
+        finally:
+            try:
+                tf_path.unlink()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":

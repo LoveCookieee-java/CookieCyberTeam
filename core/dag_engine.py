@@ -591,3 +591,12 @@ class DAGEngine:
         })
 
         return self.get_dag_summary()
+
+    def close(self) -> None:
+        """Close in-memory database connection if active."""
+        if self._mem_conn:
+            try:
+                self._mem_conn.close()
+            except Exception:
+                pass
+            self._mem_conn = None

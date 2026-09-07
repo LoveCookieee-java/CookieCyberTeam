@@ -87,6 +87,33 @@ def terminate_process_tree(proc: subprocess.Popen) -> None:
                 shell=False,
             )
         else:
+            try:
+                to_visit = [proc.pid]
+                all_children: List[int] = []
+                seen = {proc.pid}
+                while to_visit:
+                    curr = to_visit.pop()
+                    res = subprocess.run(
+                        ["pgrep", "-P", str(curr)],
+                        capture_output=True,
+                        text=True,
+                        shell=False,
+                    )
+                    if res.returncode == 0:
+                        for p in res.stdout.split():
+                            if p.isdigit():
+                                ipid = int(p)
+                                if ipid not in seen:
+                                    seen.add(ipid)
+                                    all_children.append(ipid)
+                                    to_visit.append(ipid)
+                for cpid in all_children:
+                    try:
+                        os.kill(cpid, 9)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             proc.kill()
     except Exception:
         pass

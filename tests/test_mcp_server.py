@@ -219,6 +219,7 @@ class TestMCPServer(unittest.TestCase):
     def test_tool_call_apply_safe_patch_single_committer_token_validation(self):
         """Verify mcp_apply_safe_patch enforces single-committer session tokens issued via DAG pipeline."""
         with tempfile.TemporaryDirectory() as tmpdir:
+            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmpdir)
             test_file = Path(tmpdir) / "app.py"
             test_file.write_text("x = 10\n", encoding="utf-8")
 
@@ -232,7 +233,7 @@ class TestMCPServer(unittest.TestCase):
                     "arguments": {"action": "init_pipeline", "target_file": str(test_file)},
                 },
             }
-            init_resp = self.server.handle_request(init_req)
+            init_resp = server.handle_request(init_req)
             init_data = json.loads(init_resp["result"]["content"][0]["text"])
             self.assertIn("committer_token", init_data)
             token = init_data["committer_token"]
@@ -252,7 +253,7 @@ class TestMCPServer(unittest.TestCase):
                     },
                 },
             }
-            res = self.server.handle_request(patch_no_token)
+            res = server.handle_request(patch_no_token)
             payload = json.loads(res["result"]["content"][0]["text"])
             self.assertFalse(payload["success"])
             self.assertTrue(payload.get("violation"))
@@ -274,7 +275,7 @@ class TestMCPServer(unittest.TestCase):
                     },
                 },
             }
-            res = self.server.handle_request(patch_bad_token)
+            res = server.handle_request(patch_bad_token)
             payload = json.loads(res["result"]["content"][0]["text"])
             self.assertFalse(payload["success"])
             self.assertTrue(payload.get("violation"))
@@ -295,11 +296,57 @@ class TestMCPServer(unittest.TestCase):
                     },
                 },
             }
-            res = self.server.handle_request(patch_valid_token)
+            res = server.handle_request(patch_valid_token)
             payload = json.loads(res["result"]["content"][0]["text"])
             self.assertTrue(payload["success"])
             self.assertTrue(payload["token_verified"])
             self.assertEqual(test_file.read_text(encoding="utf-8"), "x = 20\n")
+
+    def test_tool_call_apply_safe_patch_blocks_absolute_and_relative_path_traversal(self):
+        """Verify mcp_apply_safe_patch strictly rejects both relative and absolute paths outside workspace root."""
+        with tempfile.TemporaryDirectory() as ws_dir, tempfile.TemporaryDirectory() as outside_dir:
+            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=ws_dir)
+            outside_target = Path(outside_dir) / "escaped.py"
+
+            # 1. Absolute path outside workspace root
+            patch_abs = {
+                "jsonrpc": "2.0",
+                "id": 201,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_apply_safe_patch",
+                    "arguments": {
+                        "target_file": str(outside_target),
+                        "patched_content": "hacked = True\n",
+                        "committer": "Lead Orchestrator",
+                    },
+                },
+            }
+            res_abs = server.handle_request(patch_abs)
+            payload_abs = json.loads(res_abs["result"]["content"][0]["text"])
+            self.assertFalse(payload_abs["success"])
+            self.assertTrue(payload_abs.get("violation"))
+            self.assertIn("Path traversal violation", payload_abs.get("message", ""))
+
+            # 2. Relative traversal path outside workspace root
+            patch_rel = {
+                "jsonrpc": "2.0",
+                "id": 202,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_apply_safe_patch",
+                    "arguments": {
+                        "target_file": "../outside.py",
+                        "patched_content": "hacked = True\n",
+                        "committer": "Lead Orchestrator",
+                    },
+                },
+            }
+            res_rel = server.handle_request(patch_rel)
+            payload_rel = json.loads(res_rel["result"]["content"][0]["text"])
+            self.assertFalse(payload_rel["success"])
+            self.assertTrue(payload_rel.get("violation"))
+            self.assertIn("Path traversal violation", payload_rel.get("message", ""))
 
     def test_tool_call_apply_safe_patch_rejects_without_token_at_startup(self):
         """Verify mcp_apply_safe_patch rejects unauthenticated commits at server startup before any pipeline."""

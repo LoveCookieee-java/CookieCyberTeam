@@ -190,6 +190,50 @@ cvss_version = "4.0"
             self.assertEqual(cfg.diff_cap_limit, 25)
             self.assertEqual(cfg.cvss_version, "4.0")
 
+    def test_parse_toml_array_with_embedded_commas(self):
+        """Verify TOML array parsing handles string literals with embedded commas correctly."""
+        toml_content = """
+exclude_dirs = ["vendor,old", "node_modules", 'third, party, libs']
+restricted_branches = ["main", "feature/comma,branch"]
+"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            p = Path(tmp_dir) / ".blueteam.toml"
+            p.write_text(toml_content, encoding="utf-8")
+            cfg = BlueTeamConfig.load_from_file(p)
+            self.assertIn("vendor,old", cfg.exclude_dirs)
+            self.assertIn("node_modules", cfg.exclude_dirs)
+            self.assertIn("third, party, libs", cfg.exclude_dirs)
+            self.assertIn("feature/comma,branch", cfg.restricted_branches)
+
+    def test_parse_toml_multiline_array(self):
+        """Verify TOML array split across multiple lines is parsed cleanly."""
+        toml_content = """
+exclude_dirs = [
+    "vendor",
+    "node_modules",
+    "custom_cache"
+]
+restricted_branches = [
+    "main",
+    "prod",
+]
+"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            p = Path(tmp_dir) / ".blueteam.toml"
+            p.write_text(toml_content, encoding="utf-8")
+            cfg = BlueTeamConfig.load_from_file(p)
+            self.assertIn("vendor", cfg.exclude_dirs)
+            self.assertIn("node_modules", cfg.exclude_dirs)
+            self.assertIn("custom_cache", cfg.exclude_dirs)
+            self.assertIn("main", cfg.restricted_branches)
+            self.assertIn("prod", cfg.restricted_branches)
+
+    def test_parse_toml_nested_arrays(self):
+        """Verify pure-Python fallback parses nested arrays without corrupting inner comma-separated tokens."""
+        from core.config import _parse_toml_value
+        parsed = _parse_toml_value("[[1, 2], [3, 4], 'simple']")
+        self.assertEqual(parsed, [[1, 2], [3, 4], "simple"])
+
 
 if __name__ == "__main__":
     unittest.main()

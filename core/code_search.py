@@ -545,8 +545,8 @@ class HybridCodeSearch:
         indexed_chunks = 0
         for f in files_to_scan:
             # Skip virtual environments, hidden directories, pycache, .cookiegli cache
-            parts = set(f.parts)
-            if any(bad in parts for bad in {".venv", "venv", ".git", "__pycache__", "build", "dist", ".cookiegli"}):
+            parts = {part.lower() for part in f.parts}
+            if any(bad in parts for bad in {".venv", "venv", ".git", "__pycache__", "build", "dist", ".cookiegli", ".quarantine", "node_modules", ".tox"}):
                 continue
             try:
                 st_mtime = f.stat().st_mtime

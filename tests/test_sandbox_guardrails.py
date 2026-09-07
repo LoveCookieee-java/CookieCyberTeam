@@ -436,6 +436,20 @@ class TestSafePatchGuardrails(unittest.TestCase):
                 )
             self.assertIn("sensitive configuration file", str(ctx2.exception))
 
+    def test_safe_patch_application_blocks_traversal_outside_repo_or_workspace(self):
+        """SafePatchManager.apply_safe_patch strictly rejects path traversal outside repo_path or workspace_root."""
+        with tempfile.TemporaryDirectory() as repo_dir, tempfile.TemporaryDirectory() as outside_dir:
+            repo = Path(repo_dir)
+            outside_target = Path(outside_dir) / "escaped.py"
+            with self.assertRaises(GuardrailViolation) as ctx:
+                self.manager.apply_safe_patch(
+                    target_file_path=outside_target,
+                    patched_content="x = 100\n",
+                    task_id="patch-sec-traversal",
+                    repo_path=repo,
+                )
+            self.assertIn("Path traversal violation", str(ctx.exception))
+
     def test_new_file_scaffolding_threshold(self):
         """New file creation allows up to 250 lines changed, while edits to existing files enforce 50 lines."""
         # 1. New file creation: 100 lines (above 50, below 250) passes
