@@ -17,6 +17,13 @@ from core.ast_scanner import ASTScanner
 from core.binary_triage import BinaryTriageEngine
 from core.cape_adapter import CapeSandboxAdapter
 from core.code_search import HybridCodeSearch
+from core.config import BlueTeamConfig
+from core.containment import (
+    generate_firewall_rule,
+    quarantine_file,
+    restore_quarantined_file,
+    terminate_suspicious_process,
+)
 from core.cvss_calculator import cvss_for_cwe, calculate_cvss_score
 from core.dag_engine import DAGEngine, DAGCycleError, MAX_HOP_TTL
 from core.guardrails import SafePatchManager, GuardrailViolation, find_git_root
@@ -27,7 +34,7 @@ from core.tool_indexer import ToolchainIndexer
 
 
 SERVER_NAME = "blue-team-security-guardrails"
-SERVER_VERSION = "1.2.0"
+SERVER_VERSION = "1.3.0"
 PROTOCOL_VERSION = "2024-11-05"
 
 
@@ -166,16 +173,18 @@ class BlueTeamMCPServer:
         db_path: Optional[str | Path] = None,
         workspace_root: Optional[str | Path] = None,
         allowed_roots: Optional[List[str | Path]] = None,
+        config: Optional[BlueTeamConfig] = None,
     ):
         self.workspace_root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
         if allowed_roots:
             self.allowed_roots = [Path(r).resolve() for r in allowed_roots]
         else:
             self.allowed_roots = [self.workspace_root]
-        self.scanner = ASTScanner()
+        self.config = config or BlueTeamConfig.load_from_repo(self.workspace_root)
+        self.scanner = ASTScanner(config=self.config)
         self.semgrep = SemgrepAdapter()
         self.sandbox = SandboxRunner()
-        self.patch_manager = SafePatchManager(semgrep=self.semgrep, enforce_token=True)
+        self.patch_manager = SafePatchManager(config=self.config, semgrep=self.semgrep, enforce_token=True)
         self.dag_engine = DAGEngine(db_path=db_path)
         self.code_searcher = HybridCodeSearch()
         self.tool_indexer = ToolchainIndexer()
@@ -184,7 +193,7 @@ class BlueTeamMCPServer:
         self.cape_adapter = CapeSandboxAdapter()
 
     # -----------------------------------------------------------------------
-    # Tool Handlers (9 Tools)
+    # Tool Handlers (11 Tools)
     # -----------------------------------------------------------------------
 
     def tool_scan_vulnerabilities(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -220,8 +229,11 @@ class BlueTeamMCPServer:
             ast_findings = self.scanner.scan_code(code_content, file_path=target_path or "<in-memory>")
             findings.extend([f.to_dict() for f in ast_findings])
         elif target_path:
-            p = Path(target_path)
-            if p.suffix.lower() == ".py" or not use_semgrep:
+            p = Path(target_path).resolve()
+            if p.is_dir():
+                ast_findings = self.scanner.scan_directory(p)
+                findings.extend([f.to_dict() for f in ast_findings])
+            elif p.suffix.lower() == ".py" or not use_semgrep:
                 if delta_only:
                     repo_dir = find_git_root(p) or p.parent
                     ast_findings = self.scanner.scan_git_diff(repo_dir, p, base_commit=base_commit)
@@ -582,12 +594,33 @@ class BlueTeamMCPServer:
             poll_completion=poll_completion,
         )
 
+    def tool_quarantine_artifact(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Automated artifact quarantine: atomically move into vault (.quarantine/), XOR obfuscate, and strip execute permissions."""
+        file_path = args.get("file_path")
+        if not file_path:
+            return {"success": False, "error": "file_path parameter is required."}
+        quarantine_dir = args.get("quarantine_dir")
+        return quarantine_file(
+            file_path=file_path,
+            quarantine_dir=quarantine_dir,
+            workspace_root=self.workspace_root,
+        )
+
+    def tool_generate_containment_rule(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate host firewall rules (Windows netsh, Linux iptables, UFW, DNS sinkhole) to contain C2 IPs or domains."""
+        target = args.get("target")
+        if not target:
+            return {"success": False, "error": "target parameter is required."}
+        rule_type = args.get("rule_type", "block")
+        port = args.get("port")
+        return generate_firewall_rule(target=target, rule_type=rule_type, port=port)
+
     # -----------------------------------------------------------------------
-    # Specifications & Metadata (9 Tools, 6 Resources, 6 Prompts)
+    # Specifications & Metadata (11 Tools, 6 Resources, 6 Prompts)
     # -----------------------------------------------------------------------
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """Return MCP standard Tool definitions (9 Tools)."""
+        """Return MCP standard Tool definitions (11 Tools)."""
         return [
             {
                 "name": "mcp_scan_vulnerabilities",
@@ -774,6 +807,48 @@ class BlueTeamMCPServer:
                             "description": "Legacy alias for task_id.",
                         },
                     },
+                },
+            },
+            {
+                "name": "mcp_quarantine_artifact",
+                "description": "Automated artifact quarantine under Zero-Execution Policy. Atomically moves suspicious binary into encrypted/obfuscated vault (.quarantine/), strips execute permissions, and records SHA-256 evidence manifest.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "file_path": {
+                            "type": "string",
+                            "description": "Path to the suspicious file or malware sample to quarantine.",
+                        },
+                        "quarantine_dir": {
+                            "type": "string",
+                            "description": "Optional custom quarantine directory (defaults to .quarantine/ in workspace).",
+                        },
+                    },
+                    "required": ["file_path"],
+                },
+            },
+            {
+                "name": "mcp_generate_containment_rule",
+                "description": "Generates host containment and firewall rules across Windows Defender Firewall (netsh), Linux iptables, Linux UFW, and DNS sinkhole formats to block malicious C2 IPs or domains.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target": {
+                            "type": "string",
+                            "description": "Malicious IP address, CIDR subnet, or C2 domain name to block.",
+                        },
+                        "rule_type": {
+                            "type": "string",
+                            "enum": ["block", "allow"],
+                            "default": "block",
+                            "description": "Containment action: 'block' (default) or 'allow'.",
+                        },
+                        "port": {
+                            "type": "integer",
+                            "description": "Optional port number (1-65535) for port-specific firewall filtering.",
+                        },
+                    },
+                    "required": ["target"],
                 },
             },
         ]
@@ -1000,6 +1075,8 @@ class BlueTeamMCPServer:
             "mcp_triage_binary": self.tool_triage_binary,
             "mcp_run_diagnostic_tool": self.tool_run_diagnostic_tool,
             "mcp_submit_dynamic_sandbox": self.tool_submit_dynamic_sandbox,
+            "mcp_quarantine_artifact": self.tool_quarantine_artifact,
+            "mcp_generate_containment_rule": self.tool_generate_containment_rule,
         }
 
         if tool_name not in handler_map:
@@ -1129,14 +1206,16 @@ def run_self_test() -> bool:
     print("=== Blue Team MCP Server Self-Test ===")
     server = BlueTeamMCPServer(db_path=":memory:")
 
-    # 1. Test Tools list (9 Tools)
+    # 1. Test Tools list (11 Tools)
     tools = server.get_tool_definitions()
-    assert len(tools) == 9, f"Expected 9 tools, got {len(tools)}"
+    assert len(tools) == 11, f"Expected 11 tools, got {len(tools)}"
     tool_names = {t["name"] for t in tools}
     assert "mcp_search_code" in tool_names
     assert "mcp_triage_binary" in tool_names
     assert "mcp_run_diagnostic_tool" in tool_names
     assert "mcp_submit_dynamic_sandbox" in tool_names
+    assert "mcp_quarantine_artifact" in tool_names
+    assert "mcp_generate_containment_rule" in tool_names
     print(f"[PASS] Tools verified: {len(tools)} registered ({', '.join(sorted(tool_names))}).")
 
     # 2. Test Resources list & read (6 Resources)
@@ -1299,7 +1378,44 @@ def run_self_test() -> bool:
     assert sandbox_data["configured"] is False or sandbox_data["success"] is True
     print("[PASS] Dynamic Sandbox tool verified: Graceful fallback and error reporting operational.")
 
-    # 11. Run full discovered test suite in tests/
+    # 11. Test Containment Rule Generator tool via JSON-RPC
+    rule_req = {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": {
+            "name": "mcp_generate_containment_rule",
+            "arguments": {"target": "198.51.100.99", "rule_type": "block", "port": 4444},
+        },
+    }
+    rule_res = server.handle_request(rule_req)
+    rule_data = json.loads(rule_res["result"]["content"][0]["text"])
+    assert rule_data["success"] is True
+    assert "netsh" in rule_data["windows_netsh"]
+    assert "iptables" in rule_data["linux_iptables"]
+    print("[PASS] Containment Rule Generator tool verified: Windows/Linux/DNS rules generated.")
+
+    # 12. Test Artifact Quarantine tool via JSON-RPC
+    quar_sample = Path(".cookiegli/quarantine_test_sample.bin")
+    quar_sample.parent.mkdir(parents=True, exist_ok=True)
+    quar_sample.write_bytes(b"MALICIOUS_DROPPER_PAYLOAD_TEST_DATA")
+    quar_req = {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "tools/call",
+        "params": {
+            "name": "mcp_quarantine_artifact",
+            "arguments": {"file_path": str(quar_sample)},
+        },
+    }
+    quar_res = server.handle_request(quar_req)
+    quar_data = json.loads(quar_res["result"]["content"][0]["text"])
+    assert quar_data["success"] is True
+    assert not quar_sample.exists(), "Original file should have been moved into quarantine vault."
+    assert Path(quar_data["quarantine_path"]).exists()
+    print("[PASS] Artifact Quarantine tool verified: Sample atomically moved into vault and encrypted.")
+
+    # 13. Run full discovered test suite in tests/
     print("\n--- Running Full Discovered Test Suite (tests/) ---")
     import unittest
     suite = unittest.defaultTestLoader.discover("tests", pattern="test_*.py")

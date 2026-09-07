@@ -24,12 +24,12 @@ class TestMCPServer(unittest.TestCase):
         self.assertEqual(res["protocolVersion"], "2024-11-05")
         self.assertEqual(res["serverInfo"]["name"], "blue-team-security-guardrails")
 
-    def test_tools_list_all_nine(self):
-        """Verify all 9 core tools are registered."""
+    def test_tools_list_all_eleven(self):
+        """Verify all 11 core tools are registered."""
         req = {"jsonrpc": "2.0", "id": 102, "method": "tools/list", "params": {}}
         resp = self.server.handle_request(req)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 9)
+        self.assertEqual(len(tools), 11)
         tool_names = {t["name"] for t in tools}
         expected = {
             "mcp_scan_vulnerabilities",
@@ -41,6 +41,8 @@ class TestMCPServer(unittest.TestCase):
             "mcp_triage_binary",
             "mcp_run_diagnostic_tool",
             "mcp_submit_dynamic_sandbox",
+            "mcp_quarantine_artifact",
+            "mcp_generate_containment_rule",
         }
         self.assertEqual(tool_names, expected)
 
@@ -766,6 +768,75 @@ class TestMCPServer(unittest.TestCase):
             self.assertTrue(poll_payload["success"])
             self.assertEqual(poll_payload["status"], "running")
             self.assertFalse(poll_payload["completed"])
+
+    def test_quarantine_artifact_tool_jsonrpc(self):
+        """Verify mcp_quarantine_artifact via JSON-RPC executes safely."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=tmp_dir)
+            sample = Path(tmp_dir) / "suspicious_trojan.exe"
+            sample.write_bytes(b"MALWARE_PAYLOAD_TEST_12345")
+
+            req = {
+                "jsonrpc": "2.0",
+                "id": 401,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_quarantine_artifact",
+                    "arguments": {"file_path": str(sample)},
+                },
+            }
+            resp = server.handle_request(req)
+            self.assertNotIn("error", resp)
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertTrue(payload["success"])
+            self.assertIn("quarantine_id", payload)
+            self.assertFalse(sample.exists())
+            self.assertTrue(Path(payload["quarantine_path"]).exists())
+
+    def test_generate_containment_rule_tool_jsonrpc(self):
+        """Verify mcp_generate_containment_rule via JSON-RPC generates rules across platforms."""
+        req = {
+            "jsonrpc": "2.0",
+            "id": 402,
+            "method": "tools/call",
+            "params": {
+                "name": "mcp_generate_containment_rule",
+                "arguments": {"target": "203.0.113.50", "rule_type": "block", "port": 8443},
+            },
+        }
+        resp = self.server.handle_request(req)
+        self.assertNotIn("error", resp)
+        payload = json.loads(resp["result"]["content"][0]["text"])
+        self.assertTrue(payload["success"])
+        self.assertIn("windows_netsh", payload)
+        self.assertIn("linux_iptables", payload)
+        self.assertIn("linux_ufw", payload)
+        self.assertIn("dns_sinkhole", payload)
+        self.assertIn("203.0.113.50", payload["windows_netsh"])
+        self.assertIn("8443", payload["windows_netsh"])
+
+    def test_tool_call_scan_vulnerabilities_directory(self):
+        """Verify mcp_scan_vulnerabilities can scan a directory without crashing."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ws = Path(tmp_dir)
+            f = ws / "clean_mod.py"
+            f.write_text("def ping(): pass\n", encoding="utf-8")
+
+            server = BlueTeamMCPServer(db_path=":memory:", workspace_root=ws)
+            req = {
+                "jsonrpc": "2.0",
+                "id": 403,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_scan_vulnerabilities",
+                    "arguments": {"target_path": str(ws)},
+                },
+            }
+            resp = server.handle_request(req)
+            self.assertNotIn("error", resp)
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertTrue(payload["success"])
+            self.assertEqual(payload["total_findings"], 0)
 
 
 if __name__ == "__main__":

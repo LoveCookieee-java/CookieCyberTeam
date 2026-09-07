@@ -22,7 +22,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from core.cvss_calculator import cvss_for_cwe
+from core.config import (
+    BlueTeamConfig,
+    DEFAULT_EXCLUDE_DIRS,
+    DEFAULT_SHANNON_ENTROPY_THRESHOLD,
+    DEFAULT_CVSS_VERSION,
+)
+from core.cvss_calculator import cvss_for_cwe as _calc_cvss_for_cwe
+
+_CURRENT_CVSS_VERSION = DEFAULT_CVSS_VERSION
+
+
+def cvss_for_cwe(
+    cwe_id: str,
+    version: Optional[str] = None,
+    custom_overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Calculate CVSS dictionary, adhering to currently active or specified CVSS version."""
+    v = version or _CURRENT_CVSS_VERSION
+    return _calc_cvss_for_cwe(cwe_id, version=v, custom_overrides=custom_overrides)
 
 
 def calculate_shannon_entropy(data: str) -> float:
@@ -78,9 +96,17 @@ class ASTScannerVisitor(ast.NodeVisitor):
     SECRET_VAR_KEYWORDS = {"secret", "key", "token", "password", "passwd", "api_key", "apikey", "auth", "cred", "private"}
     SECRET_PREFIXES = ("ghp_", "glpat-", "sk-", "AKIA", "ASIA", "eyJh", "bearer ")
 
-    def __init__(self, source_lines: List[str], file_path: str = "<unknown>"):
+    def __init__(
+        self,
+        source_lines: List[str],
+        file_path: str = "<unknown>",
+        cvss_version: str = DEFAULT_CVSS_VERSION,
+        shannon_entropy_threshold: float = DEFAULT_SHANNON_ENTROPY_THRESHOLD,
+    ):
         self.source_lines = source_lines
         self.file_path = file_path
+        self.cvss_version = cvss_version
+        self.shannon_entropy_threshold = shannon_entropy_threshold
         self.findings: List[Finding] = []
 
         # Alias table: map local name -> fully-qualified canonical target
@@ -306,9 +332,12 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 has_secret_prefix = any(val_str.lower().startswith(p.lower()) for p in self.SECRET_PREFIXES)
                 entropy = calculate_shannon_entropy(val_str)
 
+                high_entropy_secret = len(val_str) >= 20 and entropy >= getattr(self, "shannon_entropy_threshold", DEFAULT_SHANNON_ENTROPY_THRESHOLD)
+
                 if (is_suspicious_var and len(val_str) >= 8 and not val_str.startswith("http")) or \
                    (has_secret_prefix and len(val_str) >= 16) or \
-                   (is_suspicious_var and len(val_str) >= 16 and entropy >= 3.0):
+                   (is_suspicious_var and len(val_str) >= 16 and entropy >= 3.0) or \
+                   high_entropy_secret:
                     cvss = cvss_for_cwe("CWE-798")
                     self.findings.append(Finding(
                         cwe_id="CWE-798",
@@ -919,6 +948,54 @@ class ASTScannerVisitor(ast.NodeVisitor):
 class ASTScanner:
     """Orchestrates AST parsing, security rule checks, and Delta diff scanning."""
 
+    def __init__(
+        self,
+        config: Optional[BlueTeamConfig] = None,
+        cvss_version: Optional[str] = None,
+        shannon_entropy_threshold: Optional[float] = None,
+        exclude_dirs: Optional[Set[str]] = None,
+    ):
+        self.config = config or BlueTeamConfig()
+        self.cvss_version = cvss_version or self.config.cvss_version
+        self.shannon_entropy_threshold = (
+            shannon_entropy_threshold if shannon_entropy_threshold is not None
+            else self.config.shannon_entropy_threshold
+        )
+        self.exclude_dirs = (
+            {d.strip() for d in exclude_dirs} if exclude_dirs is not None
+            else set(self.config.exclude_dirs)
+        )
+
+    def is_path_excluded(self, path: Union[str, Path]) -> bool:
+        """Check if any directory component of path matches exclude_dirs."""
+        p = Path(path)
+        parts = {part.lower() for part in p.parts}
+        return any(ex.lower() in parts for ex in self.exclude_dirs)
+
+    def scan_directory(
+        self,
+        dir_path: Union[str, Path],
+        recursive: bool = True,
+    ) -> List[Finding]:
+        """Scan all Python files in directory, skipping paths matching exclude_dirs."""
+        p = Path(dir_path).resolve()
+        if not p.is_dir():
+            if p.is_file():
+                return self.scan_file(p)
+            return []
+
+        all_findings: List[Finding] = []
+        pattern = "**/*.py" if recursive else "*.py"
+        for py_file in sorted(p.glob(pattern)):
+            if self.is_path_excluded(py_file):
+                continue
+            try:
+                findings = self.scan_file(py_file)
+                all_findings.extend(findings)
+            except Exception:
+                continue
+        return all_findings
+
     def scan_code(
         self,
         code_content: str,
@@ -946,16 +1023,27 @@ class ASTScanner:
                 remediation="Fix syntax error before SAST analysis.",
             )]
 
-        source_lines = code_content.splitlines()
-        visitor = ASTScannerVisitor(source_lines=source_lines, file_path=file_path)
-        visitor.visit(tree)
+        global _CURRENT_CVSS_VERSION
+        prev_cvss_version = _CURRENT_CVSS_VERSION
+        _CURRENT_CVSS_VERSION = self.cvss_version
+        try:
+            source_lines = code_content.splitlines()
+            visitor = ASTScannerVisitor(
+                source_lines=source_lines,
+                file_path=file_path,
+                cvss_version=self.cvss_version,
+                shannon_entropy_threshold=self.shannon_entropy_threshold,
+            )
+            visitor.visit(tree)
 
-        findings = visitor.findings
-        if modified_lines is not None:
-            # True Git Delta Scan: filter out any finding not in modified lines
-            findings = [f for f in findings if f.line_number in modified_lines]
+            findings = visitor.findings
+            if modified_lines is not None:
+                # True Git Delta Scan: filter out any finding not in modified lines
+                findings = [f for f in findings if f.line_number in modified_lines]
 
-        return findings
+            return findings
+        finally:
+            _CURRENT_CVSS_VERSION = prev_cvss_version
 
     def scan_file(
         self,
@@ -964,6 +1052,8 @@ class ASTScanner:
     ) -> List[Finding]:
         """Scan a Python file from disk."""
         path = Path(file_path).resolve()
+        if self.is_path_excluded(path):
+            return []
         if not path.exists():
             raise FileNotFoundError(f"File not found: {path}")
         code_content = path.read_text(encoding="utf-8", errors="replace")
@@ -989,6 +1079,9 @@ class ASTScanner:
         else:
             repo = Path(file_path_or_repo).resolve()
             target = Path(file_path).resolve()
+        if self.is_path_excluded(target):
+            return []
+
         rel_path = target.relative_to(repo) if target.is_relative_to(repo) else target
         rel_posix = rel_path.as_posix() if hasattr(rel_path, "as_posix") else str(rel_path).replace("\\", "/")
 

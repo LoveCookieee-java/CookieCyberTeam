@@ -1,7 +1,7 @@
 """
 Pure-Python Dynamic SOC Detection Rule Engine & Playbook Dispatcher.
 Features:
-- MITRE ATT&CK Technique Mapping (T1055, T1059, T1003, T1071, T1547.001)
+- MITRE ATT&CK Technique Mapping (T1055, T1059, T1003, T1071, T1547.001, T1562.001, T1070.001, T1486, T1505.003, T1027)
 - Regex pattern matching with 'any' / 'all' evaluation logic
 - Zero external dependencies (Python stdlib: re, dataclasses, typing)
 - Automated Incident Containment & Remediation Playbooks
@@ -175,6 +175,127 @@ DEFAULT_SOC_RULES: List[SOCRule] = [
             "2. Enable Sysmon Event ID 12/13 to monitor registry key creation and tampering.",
         ],
     ),
+    SOCRule(
+        id="SOC-T1562-01",
+        name="Impair Defenses: AMSI & Antivirus Tampering",
+        technique_id="T1562.001",
+        technique_name="Impair Defenses: Disable or Modify Tools",
+        severity="Critical",
+        description="Detects tampering with antivirus real-time monitoring, AMSI buffer patching, ETW logging disabling, or minifilter driver unloading.",
+        patterns=[
+            r"Set-MpPreference\s+-(?:DisableRealtimeMonitoring|DisableBehaviorMonitoring|DisableScriptScanning)",
+            r"AmsiScanBuffer",
+            r"EtwEventWrite",
+            r"fltmc(?:\.exe)?\s+unload",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Isolate the compromised host immediately from the corporate network.",
+            "2. Re-enable Windows Defender realtime monitoring and re-verify tamper protection via GPO.",
+            "3. Terminate the offending process and examine memory for AMSI/ETW hooks.",
+        ],
+        remediation_playbook=[
+            "1. Enforce Windows Defender Tamper Protection and RunAsPPL on LSA.",
+            "2. Deploy WDAC (Windows Defender Application Control) policy to block unsigned filter drivers.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-T1070-01",
+        name="Indicator Removal: Event Log Clearing & History Deletion",
+        technique_id="T1070.001",
+        technique_name="Indicator Removal: Clear Windows Event Logs",
+        severity="High",
+        description="Detects clearing of Windows Event Logs or shell command history to hinder incident response and forensic analysis.",
+        patterns=[
+            r"wevtutil(?:\.exe)?\s+(?:cl|clear-log)",
+            r"Clear-EventLog",
+            r"history\s+-c",
+            r"(?:rm|unlink|shred|truncate)\s+(?:-[a-zA-Z0-9_\-]+\s+)*.*\.bash_history",
+            r">\s*~?/?\.bash_history",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Check central SIEM / forwarder (Splunk, Elastic, Sentinel) for shipped copies of deleted logs.",
+            "2. Take an immediate memory snapshot of the endpoint to preserve volatile command history.",
+        ],
+        remediation_playbook=[
+            "1. Configure read-only remote log streaming to an isolated syslog/SIEM server.",
+            "2. Restrict local administrator permissions to prevent unlogged wevtutil invocations.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-T1486-01",
+        name="Data Encrypted for Impact: Ransomware & Shadow Copy Deletion",
+        technique_id="T1486",
+        technique_name="Data Encrypted for Impact",
+        severity="Critical",
+        description="Detects catastrophic ransomware behaviors including Volume Shadow Copy deletion, backup catalog destruction, and boot recovery tampering.",
+        patterns=[
+            r"vssadmin(?:\.exe)?\s+delete\s+shadows",
+            r"wbadmin(?:\.exe)?\s+delete\s+catalog",
+            r"wmic(?:\.exe)?\s+shadowcopy\s+delete",
+            r"bcdedit(?:\.exe)?\s+/set[^\n\r]*ignoreallfailures",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Sever all network connections immediately to halt ransomware propagation and encryption.",
+            "2. Freeze host state (virtual machine snapshot) for forensic analysis and key recovery.",
+        ],
+        remediation_playbook=[
+            "1. Restore systems from offline, immutable, or air-gapped backups.",
+            "2. Rotate all active domain credentials and verify storage integrity.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-T1505-01",
+        name="Server Software Component: Web Shell Signatures & Backdoors",
+        technique_id="T1505.003",
+        technique_name="Server Software Component: Web Shell",
+        severity="Critical",
+        description="Detects classic and dynamic web shells across PHP, JSP, and ASP (b374k, c99, r57, eval base64, runtime exec).",
+        patterns=[
+            r"\bb374k\b",
+            r"\bc99(?:shell)?\b",
+            r"\br57(?:shell)?\b",
+            r"eval\s*\(\s*base64_decode\s*\(\s*\$_(?:POST|GET|REQUEST|COOKIE)",
+            r"Runtime\.getRuntime\(\)\.exec\s*\(\s*request\.getParameter",
+            r"(?:execute|eval)\s*\(\s*Request(?:\.Item)?\s*[\(\[]",
+            r"Server\.CreateObject\s*\(\s*[\"\'](?:WScript\.Shell|Shell\.Application)[\"\']\s*\)",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Move the web shell file into the quarantine vault using mcp_quarantine_artifact.",
+            "2. Terminate the web server worker process handling the active connection.",
+            "3. Revoke active web application sessions and tokens.",
+        ],
+        remediation_playbook=[
+            "1. Audit web root directories for unauthorized or newly created files.",
+            "2. Enforce read-only filesystem permissions for web server document root.",
+            "3. Deploy Web Application Firewall (WAF) to inspect upload payloads.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-T1027-01",
+        name="Obfuscated Files or Information: Certutil Remote Download & Decode",
+        technique_id="T1027",
+        technique_name="Obfuscated Files or Information",
+        severity="High",
+        description="Detects abuse of Windows built-in certutil utility for decoding obfuscated base64 payloads or downloading remote binaries.",
+        patterns=[
+            r"certutil(?:\.exe)?\s+(?:-[a-zA-Z0-9_\-]+\s+)*-(?:decode|decodehex)",
+            r"certutil(?:\.exe)?\s+(?:-[a-zA-Z0-9_\-]+\s+)*-urlcache(?:\s+-[a-zA-Z0-9_\-]+)*\s+-split",
+            r"certutil(?:\.exe)?\s+(?:-[a-zA-Z0-9_\-]+\s+)*-split(?:\s+-[a-zA-Z0-9_\-]+)*\s+-urlcache",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Terminate running certutil.exe processes via terminate_suspicious_process.",
+            "2. Quarantine the decoded payload or downloaded binary file.",
+        ],
+        remediation_playbook=[
+            "1. Restrict certutil network outbound access using host firewall rules.",
+            "2. Configure AppLocker or WDAC to disallow arbitrary certutil invocations by standard users.",
+        ],
+    ),
 ]
 
 
@@ -236,13 +357,11 @@ class SOCRuleEngine:
 
             for pat_str in rule.patterns:
                 pat = re.compile(pat_str, re.IGNORECASE)
-                matches = pat.findall(text)
+                matches = list(pat.finditer(text))
                 if matches:
                     matched_patterns.append(pat_str)
-                    # Extract string representation
-                    pattern_matches[pat_str] = [
-                        m if isinstance(m, str) else m[0] for m in matches[:5]
-                    ]
+                    # Extract full matched substring representation
+                    pattern_matches[pat_str] = [m.group(0) for m in matches[:5]]
 
             is_triggered = False
             if rule.match_logic == "all":

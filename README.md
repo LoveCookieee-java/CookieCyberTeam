@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://github.com/LoveCookieee-java/CookieCyberTeam"><img src="https://img.shields.io/badge/Release-v1.3.0-blue.svg?style=flat-square" alt="Release"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="#verification--testing"><img src="https://img.shields.io/badge/Tests-173%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
+  <a href="#verification--testing"><img src="https://img.shields.io/badge/Tests-202%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
   <a href="#safety-invariants--policies"><img src="https://img.shields.io/badge/Safety-Air--Gapped%20Zero--Execution-red.svg?style=flat-square" alt="Safety"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License"></a>
@@ -51,8 +51,7 @@ When LLMs attempt to fix security vulnerabilities or debug complex codebases, th
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
 │                        BlueTeamAgent MCP Server                        │
-├───────────────────────────────────┬────────────────────────────────────┤
-│ MCP Tools (Execution)             │ MCP Resources (Context & State)    │
+│ MCP Tools (Execution - 11 Tools)  │ MCP Resources (Context & State)    │
 │ • mcp_scan_vulnerabilities        │ • mcp://rules/security-standards   │
 │ • mcp_execute_sandbox_test        │ • mcp://rules/debugging-mindset    │
 │ • mcp_create_reproduction_test    │ • mcp://state/agent-context        │
@@ -62,12 +61,15 @@ When LLMs attempt to fix security vulnerabilities or debug complex codebases, th
 │ • mcp_triage_binary               ├────────────────────────────────────┤
 │ • mcp_run_diagnostic_tool         │ MCP Prompts (Agent Personas)       │
 │ • mcp_submit_dynamic_sandbox      │ • mcp_prompt_orchestrator          │
-├───────────────────────────────────┤ • mcp_prompt_security_audit        │
-│ Core Engines                      │ • mcp_prompt_hypothesis_debug      │
-│ • AST SAST Scanner (Python/Semgrep) • mcp_prompt_safe_patch            │
-│ • 4-Gate Patch Guardrails Engine  │ • mcp_prompt_qa_review             │
-│ • DAG Engine & FIPA ACL Mailbox   │ • mcp_prompt_soc_incident_...      │
+│ • mcp_quarantine_artifact         │ • mcp_prompt_security_audit        │
+│ • mcp_generate_containment_rule   │ • mcp_prompt_hypothesis_debug      │
+├───────────────────────────────────┤ • mcp_prompt_safe_patch            │
+│ Core Engines                      │ • mcp_prompt_qa_review             │
+│ • AST SAST Scanner (Python/Semgrep) • mcp_prompt_soc_incident_...      │
+│ • 4-Gate Patch Guardrails Engine  │                                    │
+│ • DAG Engine & FIPA ACL Mailbox   │                                    │
 │ • Binary Triage & CAPEv2 Client   │                                    │
+│ • Containment Vault & Firewall Gen│                                    │
 └───────────────────────────────────┴────────────────────────────────────┘
 ```
 
@@ -251,19 +253,21 @@ Proposed Diff ──► [Gate 1: Diff Cap <= 50]
 
 ## MCP Interface Reference
 
-### Tools (9 Tools)
+### Tools (11 Tools)
 
 | Tool | Description | Key Parameters |
 | :--- | :--- | :--- |
-| `mcp_scan_vulnerabilities` | AST SAST analysis for CWEs with CVSS v3.1 scoring and Git delta filtering. | `target_path`, `git_delta_only`, `use_semgrep` |
+| `mcp_scan_vulnerabilities` | AST SAST analysis for CWEs with CVSS v3.1/v4.0 scoring and Git delta filtering. | `target_path`, `git_delta_only`, `use_semgrep` |
 | `mcp_execute_sandbox_test` | Executes unit or reproduction tests in an isolated subprocess or Docker container. | `test_file`, `test_args`, `sandbox_type`, `timeout` |
 | `mcp_create_reproduction_test` | Generates a minimal reproduction test file that must fail before a patch is written. | `target_module`, `reproduction_code`, `test_name` |
 | `mcp_apply_safe_patch` | Applies a unified patch verified by the 4-gate safety engine. | `file_path`, `patch_diff`, `committer` |
 | `mcp_orchestrate_dag` | Coordinates multi-agent DAG tasks, status transitions, and mailbox messaging. | `action`, `task_id`, `recipient`, `message_content` |
 | `mcp_search_code` | Syntactic AST chunk code search powered by SQLite FTS5 BM25 ranking. | `query`, `target_dir`, `extensions`, `limit` |
-| `mcp_triage_binary` | Air-gapped static inspection of binaries (PE/ELF/Mach-O, W^X, Shannon entropy, IOCs). | `file_path`, `max_bytes` |
+| `mcp_triage_binary` | Air-gapped static inspection of binaries (PE/ELF/Mach-O, W^X, Shannon entropy, IOCs, SOC rules). | `file_path`, `max_bytes` |
 | `mcp_run_diagnostic_tool` | Executes whitelisted host reverse-engineering CLI tools under strict argv sanitization. | `tool_name`, `target_file`, `args` |
 | `mcp_submit_dynamic_sandbox` | Submits binary to external CAPEv2/Cuckoo sandbox via REST API and returns execution reports. | `file_path`, `timeout` |
+| `mcp_quarantine_artifact` | Atomically relocates suspicious binary to encrypted `.quarantine/` vault with permission stripping. | `file_path`, `quarantine_dir` |
+| `mcp_generate_containment_rule` | Generates multi-platform firewall and sinkhole commands (Windows netsh, Linux iptables, UFW, DNS). | `target`, `rule_type`, `port` |
 
 ### Resources (6 Resources)
 
@@ -344,11 +348,60 @@ Add BlueTeamAgent to your client configuration (e.g. `claude_desktop_config.json
 | `CAPE_API_KEY` | Bearer/token credential for CAPEv2 API authentication. | `None` |
 | `DOCKER_HOST` | Docker daemon endpoint for Tier-2 container isolation. | System default |
 
+### Repository Configuration (`.blueteam.toml` or `blueteam.json`)
+
+BlueTeamAgent automatically loads `.blueteam.toml` or `blueteam.json` at repository root:
+
+```toml
+# .blueteam.toml
+diff_cap_limit = 50
+new_file_cap_limit = 250
+restricted_branches = ["main", "master", "prod", "production", "release"]
+exclude_dirs = ["vendor", "node_modules", ".git", "dist", "build", "__pycache__"]
+shannon_entropy_threshold = 7.5
+cvss_version = "3.1"
+```
+
+---
+
+## Standalone Headless CLI & Pre-Commit Hook
+
+BlueTeamAgent includes a standalone CLI (`core/cli.py`) for CI/CD pipelines and local terminal workflows:
+
+```bash
+# 1. Run SAST security scan with exit-code gating
+python -m core.cli scan --path . --format json --fail-on high
+
+# 2. Export OASIS SARIF v2.1.0 for GitHub Code Scanning
+python -m core.cli scan --path src/ --format sarif > results.sarif
+
+# 3. Air-gapped static binary triage
+python -m core.cli triage --file suspicious_sample.bin
+
+# 4. Generate multi-platform containment firewall rules
+python -m core.cli contain --target 198.51.100.42 --rule-type block --port 4444
+
+# 5. Atomically quarantine artifact into encrypted vault
+python -m core.cli quarantine --file sample.exe
+```
+
+### Pre-Commit Hook Integration
+
+Add BlueTeamAgent directly into your `.pre-commit-config.yaml`:
+
+```yaml
+repos:
+  - repo: https://github.com/LoveCookieee-java/CookieCyberTeam
+    rev: v1.3.0
+    hooks:
+      - id: blueteam-scan
+```
+
 ---
 
 ## Verification & Testing
 
-The test suite contains **173 automated unit tests** verifying all scanners, calculators, sandboxes, guardrails, and adapters with a 100% pass rate.
+The test suite contains **202 automated unit tests** verifying all scanners, calculators, sandboxes, guardrails, containment vaults, and CLI tools with a 100% pass rate.
 
 ```bash
 # Run server diagnostic self-test
@@ -363,7 +416,7 @@ python server.py --stdio
 
 ```
 === Blue Team MCP Server Self-Test ===
-[PASS] Tools verified: 9 registered
+[PASS] Tools verified: 11 registered
 [PASS] Resources verified: 6 registered and readable
 [PASS] Prompts verified: 6 registered and formatted
 [PASS] JSON-RPC initialization handshake verified
@@ -373,8 +426,10 @@ python server.py --stdio
 [PASS] Air-Gapped Binary Triage verified: PE recognized, URL IOC caught
 [PASS] Diagnostic Tool runner verified: Whitelist enforcement operational
 [PASS] Dynamic Sandbox tool verified: Graceful fallback operational
+[PASS] Containment Rule Generator tool verified: Windows/Linux/DNS rules generated
+[PASS] Artifact Quarantine tool verified: Sample atomically moved into vault and encrypted
 ----------------------------------------------------------------------
-Ran 173 tests in 3.154s
+Ran 202 tests in 3.435s
 OK (100% Passed, 0 Failures, 0 Errors)
 ```
 
@@ -385,11 +440,15 @@ OK (100% Passed, 0 Failures, 0 Errors)
 ```
 BlueTeamAgent/
 ├── server.py                 # MCP server entry point (JSON-RPC stdio dispatcher)
+├── .pre-commit-hooks.yaml    # Pre-commit hook configuration
 ├── core/
 │   ├── ast_scanner.py        # AST SAST engine, taint tracker, entropy detector
 │   ├── binary_triage.py      # Air-gapped static binary inspection & PE parser
 │   ├── cape_adapter.py       # CAPEv2 / Cuckoo REST API dynamic sandbox bridge
+│   ├── cli.py                # Standalone headless CLI (scan, triage, contain, quarantine)
 │   ├── code_search.py        # AST syntactic chunking & SQLite FTS5 search
+│   ├── config.py             # Repository configuration engine (.blueteam.toml / JSON)
+│   ├── containment.py        # Quarantine vault, firewall rule gen, process termination
 │   ├── cvss_calculator.py    # FIRST CVSS v3.1 vector parser & scoring
 │   ├── dag_engine.py         # Multi-agent DAG task scheduler & mailbox
 │   ├── guardrails.py         # 4-gate safe patch validation engine
@@ -397,7 +456,7 @@ BlueTeamAgent/
 │   ├── semgrep_adapter.py    # Multi-language external SAST bridge
 │   ├── soc_rules.py          # Dynamic SOC detection rules & MITRE ATT&CK mapping
 │   └── tool_indexer.py       # Host reverse-engineering toolchain catalog & runner
-├── tests/                    # 123 automated unit tests (100% pass rate)
+├── tests/                    # 202 automated unit tests (100% pass rate)
 └── .agents/                  # Autonomous rulesets and architecture genomes
 ```
 

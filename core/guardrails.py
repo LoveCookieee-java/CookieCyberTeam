@@ -18,12 +18,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from core.ast_scanner import ASTScanner, Finding
+from core.config import (
+    BlueTeamConfig,
+    DEFAULT_DIFF_CAP_LIMIT,
+    DEFAULT_NEW_FILE_CAP_LIMIT,
+    DEFAULT_RESTRICTED_BRANCHES,
+)
 from core.semgrep_adapter import SemgrepAdapter
 
 
-DIFF_CAP_LIMIT = 50
-NEW_FILE_CAP_LIMIT = 250
-RESTRICTED_BRANCHES = {"main", "master", "prod", "production", "release"}
+DIFF_CAP_LIMIT = DEFAULT_DIFF_CAP_LIMIT
+NEW_FILE_CAP_LIMIT = DEFAULT_NEW_FILE_CAP_LIMIT
+RESTRICTED_BRANCHES = DEFAULT_RESTRICTED_BRANCHES
 
 
 class GuardrailViolation(Exception):
@@ -571,14 +577,21 @@ class SafePatchManager:
 
     def __init__(
         self,
-        diff_cap: int = DIFF_CAP_LIMIT,
-        new_file_cap: int = NEW_FILE_CAP_LIMIT,
+        diff_cap: Optional[int] = None,
+        new_file_cap: Optional[int] = None,
         semgrep: Optional[SemgrepAdapter] = None,
         enforce_token: bool = False,
+        config: Optional[BlueTeamConfig] = None,
+        restricted_branches: Optional[Set[str]] = None,
     ):
-        self.diff_cap = diff_cap
-        self.new_file_cap = new_file_cap
-        self.scanner = ASTScanner()
+        self.config = config or BlueTeamConfig()
+        self.diff_cap = diff_cap if diff_cap is not None else self.config.diff_cap_limit
+        self.new_file_cap = new_file_cap if new_file_cap is not None else self.config.new_file_cap_limit
+        self.restricted_branches = (
+            {b.lower() for b in restricted_branches} if restricted_branches is not None
+            else set(self.config.restricted_branches)
+        )
+        self.scanner = ASTScanner(config=self.config)
         self.semgrep = semgrep or SemgrepAdapter()
         self.enforce_token = enforce_token
         self._committer_tokens: Set[str] = set()
@@ -750,7 +763,8 @@ class SafePatchManager:
         if not current_branch:
             return {"passed": True, "branch": "unknown"}
 
-        if current_branch.lower() in RESTRICTED_BRANCHES:
+        allowed_restricted = getattr(self, "restricted_branches", RESTRICTED_BRANCHES)
+        if current_branch.lower() in allowed_restricted:
             raise GuardrailViolation(
                 gate_name="Git Branch Isolation Gate",
                 message=(

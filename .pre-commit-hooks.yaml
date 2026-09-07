@@ -1,0 +1,7 @@
+- id: blueteam-scan
+  name: Blue Team Security Guardrails SAST Scan
+  description: Pure-Python AST SAST security scanner with zero external dependencies.
+  entry: python -m core.cli scan --fail-on high
+  language: python
+  types: [python]
+  pass_filenames: false
