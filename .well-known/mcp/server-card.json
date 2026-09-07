@@ -1,0 +1,710 @@
+{
+  "serverInfo": {
+    "name": "cookie-cyber-team",
+    "version": "1.0.0",
+    "description": "Single Unified Intelligent MCP Server, Defensive Guardrails & Cyber Defense System"
+  },
+  "authentication": {
+    "required": false
+  },
+  "tools": [
+    {
+      "name": "mcp_adaptive_guide",
+      "description": "Adaptive Meta-Guide and Cognitive Anchor. Discovers project genome (<5ms) and outputs optimal tool call sequence, active guardrail rules, exact targeted test commands, and prohibited actions tailored to task intent.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "task_intent": {
+            "type": "string",
+            "enum": [
+              "security_audit",
+              "bugfix_patch",
+              "test_verification",
+              "binary_triage",
+              "containment_incident",
+              "dependency_audit",
+              "code_exploration"
+            ],
+            "default": "security_audit",
+            "description": "Intended action or objective."
+          },
+          "active_file": {
+            "type": "string",
+            "description": "Optional file path currently being inspected or edited to generate targeted test commands."
+          }
+        }
+      }
+    },
+    {
+      "name": "mcp_scan_vulnerabilities",
+      "description": "Performs SAST security scan using Pure-Python AST Engine (CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295, CWE-22, CWE-327, CWE-328, CWE-377, CWE-352, CWE-611, CWE-918, CWE-79, CWE-1336, CWE-943, CWE-400), Call Graph Taint Analysis, Delta Git scanning, CVSS scoring (v3.1 & v4.0), and OASIS SARIF v2.1.0 export.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target_path": {
+            "type": "string",
+            "description": "Absolute or relative path to file to scan."
+          },
+          "code_content": {
+            "type": "string",
+            "description": "Optional in-memory code string to scan directly."
+          },
+          "delta_only": {
+            "type": "boolean",
+            "description": "If true, scans only modified lines from git diff."
+          },
+          "base_commit": {
+            "type": "string",
+            "description": "Base Git commit for diff comparison (default: 'HEAD')."
+          },
+          "use_semgrep": {
+            "type": "boolean",
+            "description": "If true, enables Semgrep multi-language adapter."
+          },
+          "output_format": {
+            "type": "string",
+            "enum": [
+              "json",
+              "sarif"
+            ],
+            "description": "Output report format: 'json' (default) or 'sarif' (OASIS SARIF v2.1.0 standard).",
+            "default": "json"
+          }
+        }
+      }
+    },
+    {
+      "name": "mcp_audit_dependencies",
+      "description": "Performs offline Software Composition Analysis (SCA) on workspace dependency files (requirements.txt, pyproject.toml, poetry.lock) against curated offline OSV JSON vulnerability database.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Optional directory or dependency file path to audit (defaults to workspace root)."
+          }
+        }
+      }
+    },
+    {
+      "name": "mcp_execute_sandbox_test",
+      "description": "Executes unit or regression tests under strict isolated sandbox (zero shell=True, env whitelist, Windows process tree termination, optional Docker).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "test_path": {
+            "type": "string",
+            "description": "Path to test script to execute."
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Timeout in seconds (default: 30)."
+          },
+          "sandbox_type": {
+            "type": "string",
+            "enum": [
+              "subprocess",
+              "docker"
+            ],
+            "description": "Sandbox isolation tier (default: 'subprocess')."
+          }
+        },
+        "required": [
+          "test_path"
+        ]
+      }
+    },
+    {
+      "name": "mcp_create_reproduction_test",
+      "description": "Generates and validates a minimal reproduction test under Step 1 of Hypothesis-Driven Debugging (verifies test fails before fix).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "save_path": {
+            "type": "string",
+            "description": "File path where reproduction test is written."
+          },
+          "test_code": {
+            "type": "string",
+            "description": "Python test code reproducing the defect."
+          },
+          "vulnerability_type": {
+            "type": "string",
+            "description": "Identified vulnerability type or CWE ID."
+          }
+        },
+        "required": [
+          "save_path",
+          "test_code"
+        ]
+      }
+    },
+    {
+      "name": "mcp_preview_surgical_patch",
+      "description": "Dry-run preview of surgical patch application. Validates Gate 1.5 (Ponytail linter: dead code, stdlib preference), Gate 2 (Diff Cap <=50 lines), Gate 4 (Zero-Deletion invariant), and returns generated unified diff without modifying disk.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target_file": {
+            "type": "string",
+            "description": "File path to apply the preview patch to."
+          },
+          "hunks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "List of hunk objects: [{'start_line': int, 'end_line': int, 'target_content': str, 'replacement_content': str}]."
+          },
+          "unified_diff": {
+            "type": "string",
+            "description": "Standard unified diff string (--- a/ +++ b/ @@ ...)."
+          },
+          "patched_content": {
+            "type": "string",
+            "description": "Complete new content for the target file."
+          }
+        },
+        "required": [
+          "target_file"
+        ]
+      }
+    },
+    {
+      "name": "mcp_apply_safe_patch",
+      "description": "Applies source code patch protected by 5 safety guardrails: Single-Committer authority, Gate 1.5 Ponytail Linter (Dead code, stdlib priority), Diff Cap (<=50 lines), Zero-Regression SAST, and Gate 4 Zero-Deletion.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target_file": {
+            "type": "string",
+            "description": "File path to apply the patch to."
+          },
+          "hunks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "List of hunk objects: [{'start_line': int, 'end_line': int, 'target_content': str, 'replacement_content': str}]."
+          },
+          "unified_diff": {
+            "type": "string",
+            "description": "Standard unified diff string (--- a/ +++ b/ @@ ...)."
+          },
+          "patched_content": {
+            "type": "string",
+            "description": "Complete new content for the target file."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Identifier of the fixing task (default: 'bugfix')."
+          },
+          "repo_path": {
+            "type": "string",
+            "description": "Optional Git repository root path."
+          },
+          "committer": {
+            "type": "string",
+            "description": "Agent persona applying the patch. Only 'Lead Orchestrator' is authorized (Single-Committer Gate).",
+            "default": "Lead Orchestrator"
+          },
+          "committer_token": {
+            "type": "string",
+            "description": "Ephemeral capability session token issued to Lead Orchestrator for authorized patch application."
+          }
+        },
+        "required": [
+          "target_file"
+        ]
+      }
+    },
+    {
+      "name": "mcp_orchestrate_dag",
+      "description": "Manages Multi-Agent DAG tasks and Point-to-Point Mailbox (Lead Orchestrator, Security Auditor, Debugger, Patch Developer, QA Reviewer, SOC Incident Responder).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "init_pipeline",
+              "add_task",
+              "update_task",
+              "get_ready",
+              "get_summary",
+              "set_context",
+              "get_context",
+              "send_message",
+              "get_inbox",
+              "mark_processed",
+              "check_drainage",
+              "get_messages",
+              "recover_orphans",
+              "issue_committer_token",
+              "get_committer_token"
+            ],
+            "description": "Action to perform on DAG workflow or Mailbox."
+          },
+          "pipeline_id": {
+            "type": "string",
+            "description": "Pipeline unique ID."
+          },
+          "target_file": {
+            "type": "string",
+            "description": "Target file for pipeline."
+          },
+          "include_soc": {
+            "type": "boolean",
+            "description": "Include SOC Incident Responder in pipeline."
+          },
+          "task_id": {
+            "type": "string",
+            "description": "Task identifier."
+          },
+          "name": {
+            "type": "string",
+            "description": "Task descriptive name."
+          },
+          "assigned_to": {
+            "type": "string",
+            "description": "Agent role assigned."
+          },
+          "dependencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "List of prerequisite task IDs."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PENDING",
+              "READY",
+              "RUNNING",
+              "COMPLETED",
+              "FAILED"
+            ]
+          },
+          "result": {
+            "type": "object",
+            "description": "Task output payload."
+          },
+          "key": {
+            "type": "string",
+            "description": "Shared context key."
+          },
+          "value": {
+            "description": "Shared context JSON value."
+          },
+          "from_agent": {
+            "type": "string",
+            "description": "Sender agent for mailbox message."
+          },
+          "to_agent": {
+            "type": "string",
+            "description": "Recipient agent for mailbox message."
+          },
+          "speech_act": {
+            "type": "string",
+            "enum": [
+              "INFORM",
+              "REQUEST",
+              "PROPOSE",
+              "CONFIRM",
+              "ESCALATE"
+            ]
+          },
+          "subject": {
+            "type": "string",
+            "description": "Message subject line."
+          },
+          "payload": {
+            "type": "object",
+            "description": "Message structured payload."
+          },
+          "agent_id": {
+            "type": "string",
+            "description": "Agent identifier to check inbox or drainage."
+          },
+          "msg_id": {
+            "type": "string",
+            "description": "Message ID to mark processed."
+          },
+          "unread_only": {
+            "type": "boolean",
+            "description": "Filter inbox by unread status."
+          }
+        },
+        "required": [
+          "action"
+        ]
+      }
+    },
+    {
+      "name": "mcp_search_code",
+      "description": "Surgical code search using Semble-style tokenization, syntactic method/skeleton chunking, and SQLite FTS5 BM25. Returns targeted chunks (<100 tokens).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Search query keywords or function/class symbols."
+          },
+          "target_path": {
+            "type": "string",
+            "description": "Target file or directory path to index and search."
+          },
+          "top_k": {
+            "type": "integer",
+            "description": "Maximum number of chunks to return (default: 5)."
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "File extensions to include (e.g. ['.py', '.js', '.ts', '.go', '.java', '.c', '.cpp'])."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "full",
+              "skeleton",
+              "compact"
+            ],
+            "description": "Chunk presentation mode (default: 'full').",
+            "default": "full"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "mcp_triage_binary",
+      "description": "Air-Gapped Binary Triage under Zero-Execution Policy. Dissects PE/ELF/ZIP/DEX magic headers, 1KB block Shannon entropy, and safe string IOCs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Path to binary artifact to triage safely."
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      }
+    },
+    {
+      "name": "mcp_run_diagnostic_tool",
+      "description": "Safely executes a whitelisted host diagnostic or reverse engineering tool ('strings', 'readelf', 'objdump', 'cfr', 'jadx', 'r2', 'radare2') against a target file under strict sandbox isolation and input sanitization.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "tool_name": {
+            "type": "string",
+            "description": "Name of whitelisted diagnostic tool.",
+            "enum": [
+              "strings",
+              "readelf",
+              "objdump",
+              "cfr",
+              "jadx",
+              "r2",
+              "radare2"
+            ]
+          },
+          "target_file": {
+            "type": "string",
+            "description": "Path to binary or target file to inspect."
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional list of CLI arguments (forbidden shell metacharacters are strictly rejected)."
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Execution timeout in seconds (default: 30)."
+          }
+        },
+        "required": [
+          "tool_name",
+          "target_file"
+        ]
+      }
+    },
+    {
+      "name": "mcp_submit_dynamic_sandbox",
+      "description": "Submits a suspicious binary to an external isolated dynamic analysis sandbox (CAPEv2 / Cuckoo REST API) or polls task status non-blockingly via async_mode and check_status_task_id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Path to binary artifact to submit for dynamic execution analysis."
+          },
+          "timeout": {
+            "type": "integer",
+            "description": "Dynamic analysis timeout in seconds (default: 120)."
+          },
+          "tags": {
+            "type": "string",
+            "description": "Optional sandbox routing tags (e.g. 'win10', 'x64', 'office')."
+          },
+          "async_mode": {
+            "type": "boolean",
+            "description": "If true, submits file and returns task_id immediately without blocking for 120s.",
+            "default": false
+          },
+          "task_id": {
+            "type": "integer",
+            "description": "Poll status or retrieve report for a previously submitted task ID without re-submitting."
+          },
+          "check_status_task_id": {
+            "type": "integer",
+            "description": "Legacy alias for task_id."
+          }
+        }
+      }
+    },
+    {
+      "name": "mcp_quarantine_artifact",
+      "description": "Automated artifact quarantine under Zero-Execution Policy. Atomically moves suspicious binary into encrypted/obfuscated vault (.quarantine/), strips execute permissions, and records SHA-256 evidence manifest.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Path to the suspicious file or malware sample to quarantine."
+          },
+          "quarantine_dir": {
+            "type": "string",
+            "description": "Optional custom quarantine directory (defaults to .quarantine/ in workspace)."
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      }
+    },
+    {
+      "name": "mcp_restore_quarantined_file",
+      "description": "Restores a previously quarantined file from the encrypted/obfuscated vault back to its original destination or workspace.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "quarantine_path": {
+            "type": "string",
+            "description": "Path to the quarantined encrypted file in the vault."
+          },
+          "original_destination": {
+            "type": "string",
+            "description": "Optional path where the file should be restored. If omitted, restored to original location recorded in manifest."
+          }
+        },
+        "required": [
+          "quarantine_path"
+        ]
+      }
+    },
+    {
+      "name": "mcp_generate_containment_rule",
+      "description": "Generates host containment and firewall rules across Windows Defender Firewall (netsh), Linux iptables, Linux UFW, and DNS sinkhole formats to block malicious C2 IPs or domains.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "type": "string",
+            "description": "Malicious IP address, CIDR subnet, or C2 domain name to block."
+          },
+          "rule_type": {
+            "type": "string",
+            "enum": [
+              "block",
+              "allow"
+            ],
+            "default": "block",
+            "description": "Containment action: 'block' (default) or 'allow'."
+          },
+          "port": {
+            "type": "integer",
+            "description": "Optional port number (1-65535) for port-specific firewall filtering."
+          }
+        },
+        "required": [
+          "target"
+        ]
+      }
+    },
+    {
+      "name": "mcp_terminate_process",
+      "description": "Safely terminates a suspicious or rogue process and its entire descendant child process tree (using taskkill /T on Windows, process groups / SIGKILL on Linux) under containment protocols.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pid": {
+            "type": "integer",
+            "description": "Process ID (PID) to terminate."
+          },
+          "timeout": {
+            "type": "number",
+            "description": "Timeout in seconds to wait for graceful termination before force killing (default: 3.0).",
+            "default": 3.0
+          }
+        },
+        "required": [
+          "pid"
+        ]
+      }
+    }
+  ],
+  "resources": [
+    {
+      "uri": "mcp://rules/security-standards",
+      "name": "CookieCyberTeam Security Standards & Defensive Guardrails",
+      "description": "Standard checklist for CWE-78, CWE-89, CWE-95, CWE-502, CWE-798, CWE-295, file protection invariants, and zero-trust conventions.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "mcp://rules/debugging-mindset",
+      "name": "4-Step Hypothesis-Driven Debugging Protocol",
+      "description": "Scientific debugging mindset: Reproduce -> Trace & Isolate -> Form Hypothesis -> Confirm via Proof & Minimal Diff.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "mcp://state/agent-context",
+      "name": "Multi-Agent Shared State & DAG Overview",
+      "description": "Dynamic SQLite WAL shared memory containing pipeline status, task graph, and findings.",
+      "mimeType": "application/json"
+    },
+    {
+      "uri": "mcp://state/tool-index",
+      "name": "Host Defensive & Reverse Engineering Toolchain Index",
+      "description": "Dynamic inventory of security, SAST, reverse engineering, and sandbox tools available on host system.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "mcp://playbooks/malware-triage",
+      "name": "NIST SP 800-61 Rev 3: Malware Triage & Reverse Engineering Playbook",
+      "description": "Standard procedures for Zero-Execution air-gapped triage, PE/ELF magic header parsing, Shannon entropy, and string IOC extraction.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "mcp://playbooks/compromise-assessment",
+      "name": "Multi-Agent Compromise Assessment & Agentic Threats Playbook",
+      "description": "Server containment, unauthorized file deletion prevention, single-committer isolation, and OWASP Top 10 for Agentic Systems.",
+      "mimeType": "text/markdown"
+    },
+    {
+      "uri": "mcp://context/project-genome",
+      "name": "CookieCyberTeam Project Genome Profile",
+      "description": "Sub-5ms discovery of project language, frameworks, test runners, git status, risk profile, and adaptive recommendations.",
+      "mimeType": "application/json"
+    },
+    {
+      "uri": "mcp://rules/active-guardrails",
+      "name": "CookieCyberTeam Active Security Guardrails & Gate Policies",
+      "description": "Active runtime configuration of all 5 Zero-Trust Guardrail Gates (Syntax, Ponytail Linter, Diff Cap, SAST, Zero-Deletion).",
+      "mimeType": "application/json"
+    }
+  ],
+  "prompts": [
+    {
+      "name": "mcp_prompt_orchestrator",
+      "description": "Lead Orchestrator: Decomposes security issues into an acyclic DAG, manages mailbox routing, and enforces single-committer gates.",
+      "arguments": [
+        {
+          "name": "issue_description",
+          "description": "Summary of bug/security report.",
+          "required": true
+        },
+        {
+          "name": "target_file",
+          "description": "Target source file.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "mcp_prompt_security_audit",
+      "description": "Security Auditor: Maps attack surface, scans AST for CWEs, and assigns FIRST CVSS v3.1 vectors.",
+      "arguments": [
+        {
+          "name": "target_file",
+          "description": "Target source file to audit.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "mcp_prompt_hypothesis_debug",
+      "description": "Scientific Debugger: Executes 4-step hypothesis method and builds minimal reproduction test.",
+      "arguments": [
+        {
+          "name": "vulnerability",
+          "description": "Identified vulnerability details.",
+          "required": true
+        },
+        {
+          "name": "target_file",
+          "description": "Target source file.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "mcp_prompt_safe_patch",
+      "description": "Patch Developer: Drafts minimal diff (<=50 lines) adhering to Ponytail Principle.",
+      "arguments": [
+        {
+          "name": "root_cause",
+          "description": "Root cause confirmed by Debugger.",
+          "required": true
+        },
+        {
+          "name": "target_file",
+          "description": "Target source file.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "mcp_prompt_qa_review",
+      "description": "QA / Code Reviewer: Runs isolated sandbox tests and enforces Zero-Regression SAST.",
+      "arguments": [
+        {
+          "name": "target_file",
+          "description": "Patched file to verify.",
+          "required": true
+        },
+        {
+          "name": "repro_test",
+          "description": "Path to reproduction test.",
+          "required": true
+        }
+      ]
+    },
+    {
+      "name": "mcp_prompt_soc_incident_responder",
+      "description": "SOC Incident Responder: Coordinates triage under NIST SP 800-61 Rev 3, performs air-gapped binary triage, and isolates IOCs.",
+      "arguments": [
+        {
+          "name": "incident_description",
+          "description": "Incident or artifact summary.",
+          "required": true
+        },
+        {
+          "name": "artifact_path",
+          "description": "Path to suspicious file or binary.",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

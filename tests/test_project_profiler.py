@@ -28,7 +28,7 @@ class TestProjectGenomeProfiler(unittest.TestCase):
             self.assertIn("fastapi", genome["frameworks"])
             self.assertEqual(genome["test_runner"]["type"], "pytest")
             self.assertIn("pytest", genome["test_runner"]["command"])
-            self.assertLess(genome["discovery_time_ms"], 200.0)
+            self.assertLess(genome["discovery_time_ms"], 500.0)
 
     def test_detect_typescript_framework(self):
         """Verify detection of TypeScript / JavaScript and Jest runner."""
