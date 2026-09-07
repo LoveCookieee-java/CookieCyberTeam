@@ -716,7 +716,7 @@ class CookieCyberMCPServer:
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
         """Return MCP standard Tool definitions (16 Tools)."""
-        return [
+        tools: List[Dict[str, Any]] = [
             {
                 "name": "mcp_adaptive_guide",
                 "description": "Adaptive Meta-Guide and Cognitive Anchor. Discovers project genome (<5ms) and outputs optimal tool call sequence, active guardrail rules, exact targeted test commands, and prohibited actions tailored to task intent.",
@@ -865,13 +865,13 @@ class CookieCyberMCPServer:
                         "name": {"type": "string", "description": "Task descriptive name."},
                         "assigned_to": {"type": "string", "description": "Agent role assigned."},
                         "dependencies": {"type": "array", "items": {"type": "string"}, "description": "List of prerequisite task IDs."},
-                        "status": {"type": "string", "enum": ["PENDING", "READY", "RUNNING", "COMPLETED", "FAILED"]},
+                        "status": {"type": "string", "enum": ["PENDING", "READY", "RUNNING", "COMPLETED", "FAILED"], "description": "New status for task state transition."},
                         "result": {"type": "object", "description": "Task output payload."},
                         "key": {"type": "string", "description": "Shared context key."},
-                        "value": {"description": "Shared context JSON value."},
+                        "value": {"type": "string", "description": "Shared context JSON or string value."},
                         "from_agent": {"type": "string", "description": "Sender agent for mailbox message."},
                         "to_agent": {"type": "string", "description": "Recipient agent for mailbox message."},
-                        "speech_act": {"type": "string", "enum": ["INFORM", "REQUEST", "PROPOSE", "CONFIRM", "ESCALATE"]},
+                        "speech_act": {"type": "string", "enum": ["INFORM", "REQUEST", "PROPOSE", "CONFIRM", "ESCALATE"], "description": "FIPA-ACL speech act communicative intent."},
                         "subject": {"type": "string", "description": "Message subject line."},
                         "payload": {"type": "object", "description": "Message structured payload."},
                         "agent_id": {"type": "string", "description": "Agent identifier to check inbox or drainage."},
@@ -1049,6 +1049,32 @@ class CookieCyberMCPServer:
                 },
             },
         ]
+
+        read_only_tools = {
+            "mcp_adaptive_guide", "mcp_scan_vulnerabilities", "mcp_audit_dependencies",
+            "mcp_search_code", "mcp_triage_binary", "mcp_preview_surgical_patch",
+        }
+        for t in tools:
+            name = t["name"]
+            is_ro = name in read_only_tools
+            if "outputSchema" not in t:
+                t["outputSchema"] = {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "description": "Execution status ('success' or 'error')."},
+                        "message": {"type": "string", "description": "Human-readable summary of operation results."},
+                        "data": {"type": "object", "description": "Structured findings or response payload."}
+                    },
+                    "required": ["status"]
+                }
+            if "annotations" not in t:
+                t["annotations"] = {
+                    "readOnly": is_ro,
+                    "destructive": not is_ro and name in {"mcp_terminate_process", "mcp_quarantine_artifact"},
+                    "audience": ["user", "assistant"],
+                    "priority": 1.0
+                }
+        return tools
 
     def get_resource_definitions(self) -> List[Dict[str, Any]]:
         """Return MCP standard Resource definitions (8 Resources)."""

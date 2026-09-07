@@ -2,7 +2,7 @@
   "serverInfo": {
     "name": "cookie-cyber-team",
     "version": "1.0.0",
-    "description": "Single Unified Intelligent MCP Server, Defensive Guardrails & Cyber Defense System"
+    "description": "Single Unified Intelligent MCP Server, Defensive Guardrails & Cyber Defense System for autonomous vulnerability remediation, inter-procedural taint flow analysis, air-gapped binary triage, and zero-regression safe patch verification."
   },
   "authentication": {
     "required": false
@@ -33,6 +33,35 @@
             "description": "Optional file path currently being inspected or edited to generate targeted test commands."
           }
         }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -71,6 +100,35 @@
             "default": "json"
           }
         }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -84,6 +142,35 @@
             "description": "Optional directory or dependency file path to audit (defaults to workspace root)."
           }
         }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -112,6 +199,35 @@
         "required": [
           "test_path"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -137,6 +253,35 @@
           "save_path",
           "test_code"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -168,6 +313,35 @@
         "required": [
           "target_file"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -216,6 +390,35 @@
         "required": [
           "target_file"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -284,7 +487,8 @@
               "RUNNING",
               "COMPLETED",
               "FAILED"
-            ]
+            ],
+            "description": "New status for task state transition."
           },
           "result": {
             "type": "object",
@@ -295,7 +499,8 @@
             "description": "Shared context key."
           },
           "value": {
-            "description": "Shared context JSON value."
+            "type": "string",
+            "description": "Shared context JSON or string value."
           },
           "from_agent": {
             "type": "string",
@@ -313,7 +518,8 @@
               "PROPOSE",
               "CONFIRM",
               "ESCALATE"
-            ]
+            ],
+            "description": "FIPA-ACL speech act communicative intent."
           },
           "subject": {
             "type": "string",
@@ -339,6 +545,35 @@
         "required": [
           "action"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -380,6 +615,35 @@
         "required": [
           "query"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -396,6 +660,35 @@
         "required": [
           "file_path"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -437,6 +730,35 @@
           "tool_name",
           "target_file"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -471,6 +793,35 @@
             "description": "Legacy alias for task_id."
           }
         }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -491,6 +842,35 @@
         "required": [
           "file_path"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": true,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -511,6 +891,35 @@
         "required": [
           "quarantine_path"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -540,6 +949,35 @@
         "required": [
           "target"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     },
     {
@@ -561,6 +999,35 @@
         "required": [
           "pid"
         ]
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": false,
+        "destructive": true,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
       }
     }
   ],
