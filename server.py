@@ -1,7 +1,7 @@
 """
 CookieCyberTeam MCP Security Guardrails & Multi-Agent Orchestration Server.
 Standard JSON-RPC 2.0 stdio MCP Server.
-Packages 16 Tools, 8 Resources, and 6 Prompts for safe, scientific defensive engineering,
+Packages 19 Tools, 9 Resources, and 8 Prompts for safe, scientific defensive engineering,
 zero-regression patching, air-gapped binary triage, and multi-agent coordination.
 """
 
@@ -283,7 +283,7 @@ class CookieCyberMCPServer:
         self.sca_scanner = SCAScanner(workspace_root=self.workspace_root)
 
     # -----------------------------------------------------------------------
-    # Tool Handlers (16 Tools)
+    # Tool Handlers (19 Tools)
     # -----------------------------------------------------------------------
 
     def tool_adaptive_guide(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -519,7 +519,7 @@ class CookieCyberMCPServer:
                                 refs += 1
                             elif isinstance(n, ast.Attribute) and n.attr == name:
                                 refs += 1
-                        if refs <= 1 and not name.startswith("_"):
+                        if refs == 0 and not name.startswith("_"):
                             exported = False
                             for stmt in tree.body:
                                 if isinstance(stmt, ast.Assign):
@@ -555,7 +555,9 @@ class CookieCyberMCPServer:
                 if m:
                     pkg = m.group(1) or m.group(2)
                     if pkg and not pkg.startswith((".", "/")):
-                        equiv = get_js_native_equivalent(pkg.split("/")[0])
+                        parts = pkg.split("/")
+                        pkg_name = f"{parts[0]}/{parts[1]}" if pkg.startswith("@") and len(parts) >= 2 else parts[0]
+                        equiv = get_js_native_equivalent(pkg_name) or get_js_native_equivalent(parts[0])
                         if equiv:
                             findings.append({
                                 "type": "native_replacement",
@@ -1084,11 +1086,11 @@ class CookieCyberMCPServer:
         return generate_firewall_rule(target=target, rule_type=rule_type, port=port)
 
     # -----------------------------------------------------------------------
-    # Specifications & Metadata (11 Tools, 6 Resources, 6 Prompts)
+    # Specifications & Metadata (19 Tools, 9 Resources, 8 Prompts)
     # -----------------------------------------------------------------------
 
     def get_tool_definitions(self) -> List[Dict[str, Any]]:
-        """Return MCP standard Tool definitions (16 Tools)."""
+        """Return MCP standard Tool definitions (19 Tools)."""
         tools: List[Dict[str, Any]] = [
             {
                 "name": "mcp_adaptive_guide",
@@ -1106,6 +1108,8 @@ class CookieCyberMCPServer:
                                 "containment_incident",
                                 "dependency_audit",
                                 "code_exploration",
+                                "code_simplification",
+                                "architecture_audit",
                             ],
                             "default": "security_audit",
                             "description": "Intended action or objective.",
@@ -1510,7 +1514,7 @@ class CookieCyberMCPServer:
         return tools
 
     def get_resource_definitions(self) -> List[Dict[str, Any]]:
-        """Return MCP standard Resource definitions (8 Resources)."""
+        """Return MCP standard Resource definitions (9 Resources)."""
         return [
             {
                 "uri": "mcp://rules/security-standards",
@@ -1611,7 +1615,7 @@ class CookieCyberMCPServer:
         raise ValueError(f"Resource not found: {uri}")
 
     def get_prompt_definitions(self) -> List[Dict[str, Any]]:
-        """Return MCP standard Prompt definitions (6 Prompts)."""
+        """Return MCP standard Prompt definitions (8 Prompts)."""
         return [
             {
                 "name": "mcp_prompt_orchestrator",

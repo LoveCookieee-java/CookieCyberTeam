@@ -147,11 +147,22 @@ def is_stateless_utility_class(node: ast.ClassDef) -> bool:
     return True
 
 
+def _format_ast_callable(node: ast.AST) -> str:
+    """Format AST call target expression into string representation (e.g. 'foo' or 'json.dumps')."""
+    if isinstance(node, ast.Name):
+        return node.id
+    elif isinstance(node, ast.Attribute):
+        parent = _format_ast_callable(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    return ""
+
+
 def is_shallow_wrapper_function(node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> Optional[str]:
     """
     Detect if a function is a shallow wrapper that merely calls another function
     with the exact same arguments and returns or evaluates the result directly.
     Returns the name of the wrapped target function, or None.
+    Supports attribute chains (e.g. json.dumps), *args/**kwargs forwarding, and kwargs.
     """
     # Filter out docstrings and empty statements
     stmts = [
@@ -176,28 +187,63 @@ def is_shallow_wrapper_function(node: Union[ast.FunctionDef, ast.AsyncFunctionDe
         return None
 
     # Resolve target function name
-    target_name = ""
-    if isinstance(call_node.func, ast.Name):
-        target_name = call_node.func.id
-    elif isinstance(call_node.func, ast.Attribute):
-        target_name = call_node.func.attr
-
-    if not target_name or target_name == node.name:
+    target_name = _format_ast_callable(call_node.func)
+    if not target_name:
         return None
 
-    # Compare parameters: wrapper args should match call args
-    wrapper_params = [a.arg for a in node.args.args]
-    call_args: List[str] = []
+    # Reject direct self-recursion (e.g. def foo(): return foo())
+    if isinstance(call_node.func, ast.Name) and target_name == node.name:
+        return None
+
+    # Compare arguments:
+    # 1. Positional arguments
+    wrapper_positional = [a.arg for a in node.args.args]
+    call_positional: List[str] = []
+    starred_arg: Optional[str] = None
+
     for arg in call_node.args:
         if isinstance(arg, ast.Name):
-            call_args.append(arg.id)
+            call_positional.append(arg.id)
+        elif isinstance(arg, ast.Starred) and isinstance(arg.value, ast.Name):
+            starred_arg = arg.value.id
         else:
             return None
 
-    if wrapper_params == call_args and not call_node.keywords and not node.args.kwonlyargs:
-        return target_name
+    if wrapper_positional != call_positional:
+        return None
 
-    return None
+    # Verify *args forwarding
+    wrapper_vararg = node.args.vararg.arg if node.args.vararg else None
+    if wrapper_vararg != starred_arg:
+        return None
+
+    # 2. Keyword-only arguments & **kwargs
+    wrapper_kwonly = {a.arg for a in node.args.kwonlyargs}
+    wrapper_kwarg = node.args.kwarg.arg if node.args.kwarg else None
+
+    call_kwonly = set()
+    double_starred_kwarg: Optional[str] = None
+
+    for kw in call_node.keywords:
+        if kw.arg is None:
+            if isinstance(kw.value, ast.Name):
+                double_starred_kwarg = kw.value.id
+            else:
+                return None
+        else:
+            if isinstance(kw.value, ast.Name) and kw.value.id == kw.arg:
+                call_kwonly.add(kw.arg)
+            else:
+                return None
+
+    if wrapper_kwonly != call_kwonly:
+        return None
+
+    if wrapper_kwarg != double_starred_kwarg:
+        return None
+
+    return target_name
+
 
 
 def audit_ast_yagni(tree: ast.AST) -> List[Dict[str, Any]]:

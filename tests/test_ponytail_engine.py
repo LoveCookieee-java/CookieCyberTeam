@@ -136,6 +136,36 @@ def fetch_user(user_id):
         func_node = tree.body[0]
         self.assertFalse(is_shallow_wrapper_function(func_node))
 
+    def test_shallow_wrapper_variadic_args(self):
+        """Detect shallow wrapper functions that forward *args and **kwargs."""
+        code_variadic = """
+def forward(*args, **kwargs):
+    return delegate(*args, **kwargs)
+"""
+        tree = ast.parse(code_variadic)
+        func_node = tree.body[0]
+        self.assertEqual(is_shallow_wrapper_function(func_node), "delegate")
+
+    def test_shallow_wrapper_attribute_target_and_same_name(self):
+        """Detect shallow wrapper functions that delegate to module or attribute with same name."""
+        code_attr = """
+def dumps(obj):
+    return json.dumps(obj)
+"""
+        tree = ast.parse(code_attr)
+        func_node = tree.body[0]
+        self.assertEqual(is_shallow_wrapper_function(func_node), "json.dumps")
+
+    def test_recursive_function_not_shallow_wrapper(self):
+        """Self-recursive functions must not be flagged as external wrappers."""
+        code_recurse = """
+def factorial(n):
+    return factorial(n)
+"""
+        tree = ast.parse(code_recurse)
+        func_node = tree.body[0]
+        self.assertIsNone(is_shallow_wrapper_function(func_node))
+
     def test_audit_ast_yagni_full_report(self):
         """Test comprehensive audit_ast_yagni analysis on AST tree."""
         code = """
@@ -307,6 +337,45 @@ class TestGate15PonytailGuardrails(unittest.TestCase):
         self.assertTrue(result["success"])
         self.assertEqual(target_file.read_text(encoding="utf-8"), patched_code)
 
+    def test_package_json_delta_allows_preexisting_dependencies(self):
+        """Modifying an existing package.json containing unneeded dependencies does not block if none newly added."""
+        orig_pj = json.dumps({
+            "name": "my-app",
+            "version": "1.0.0",
+            "dependencies": {"lodash": "^4.17.21"}
+        })
+        patched_pj = json.dumps({
+            "name": "my-app",
+            "version": "1.0.1",
+            "dependencies": {"lodash": "^4.17.21"},
+            "scripts": {"build": "tsc"}
+        })
+        # Should not raise GuardrailViolation in full mode
+        check_ponytail_linter(orig_pj, patched_pj, file_path="package.json", mode="full")
+
+    def test_package_json_delta_rejects_new_unneeded_dependencies(self):
+        """Adding a new unneeded dependency to an existing package.json is rejected."""
+        orig_pj = json.dumps({
+            "name": "my-app",
+            "dependencies": {"react": "^18.0.0"}
+        })
+        patched_pj = json.dumps({
+            "name": "my-app",
+            "dependencies": {"react": "^18.0.0", "lodash": "^4.17.21"}
+        })
+        with self.assertRaises(GuardrailViolation):
+            check_ponytail_linter(orig_pj, patched_pj, file_path="package.json", mode="full")
+
+    def test_js_ts_scoped_package_resolution(self):
+        """Scoped packages like @scope/pkg are properly extracted and checked against package.json."""
+        orig_code = ""
+        patched_code = "import { helper } from '@company/utils/helper';\n"
+        pkg_json = self.repo_path / "package.json"
+        pkg_json.write_text(json.dumps({"dependencies": {"@company/utils": "^1.0.0"}}), encoding="utf-8")
+
+        # In full mode, since @company/utils is in package.json, should pass without violation
+        check_ponytail_linter(orig_code, patched_code, file_path="src/index.ts", repo_path=self.repo_path, mode="full")
+
 
 class TestPonytailMCPInterfaces(unittest.TestCase):
     """Test Ponytail tools, resources, and prompts via MCP Server."""
@@ -428,6 +497,26 @@ class TestPonytailMCPInterfaces(unittest.TestCase):
         self.assertIn("Shortest working diff wins", text_min)
         self.assertIn("ultra", text_min)
 
+    def test_tool_ponytail_review_does_not_flag_called_helper_as_dead_code(self):
+        """Functions called by other functions within the same file (refs > 0) must not be flagged as dead code."""
+        code = """
+__all__ = ["main"]
+
+def helper():
+    return 42
+
+def unused_func():
+    return 99
+
+def main():
+    return helper()
+"""
+        res = self.server.tool_ponytail_review({"code": code, "file_path": "app.py", "mode": "full"})
+        dead_names = [f["name"] for f in res.get("findings", []) if f.get("type") == "potential_dead_code"]
+        self.assertNotIn("helper", dead_names)
+        self.assertNotIn("main", dead_names)
+        self.assertIn("unused_func", dead_names)
+
 
 class TestProjectGenomeProfilerPonytail(unittest.TestCase):
     """Test Project Genome Profiler Ponytail playbooks and recommendations."""
@@ -445,6 +534,38 @@ class TestProjectGenomeProfilerPonytail(unittest.TestCase):
         profiler = ProjectGenomeProfiler()
         guide = profiler.get_adaptive_guide(task_intent="code_exploration")
         self.assertTrue(any("Gate 1.5 (Ponytail Linter)" in g for g in guide["active_guardrails"]))
+
+    def test_adaptive_guide_with_new_task_intents_via_mcp(self):
+        """Verify mcp_adaptive_guide tool handles code_simplification and architecture_audit intents."""
+        server = CookieCyberMCPServer(db_path=":memory:")
+        try:
+            res_simp = server.handle_request({
+                "jsonrpc": "2.0",
+                "id": 110,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_adaptive_guide",
+                    "arguments": {"task_intent": "code_simplification"},
+                },
+            })
+            self.assertNotIn("error", res_simp)
+            data_simp = json.loads(res_simp["result"]["content"][0]["text"])
+            self.assertIn("mcp_ponytail_review", data_simp["playbook"])
+
+            res_arch = server.handle_request({
+                "jsonrpc": "2.0",
+                "id": 111,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_adaptive_guide",
+                    "arguments": {"task_intent": "architecture_audit"},
+                },
+            })
+            self.assertNotIn("error", res_arch)
+            data_arch = json.loads(res_arch["result"]["content"][0]["text"])
+            self.assertIn("mcp_ponytail_audit", data_arch["playbook"])
+        finally:
+            server.close()
 
 
 if __name__ == "__main__":

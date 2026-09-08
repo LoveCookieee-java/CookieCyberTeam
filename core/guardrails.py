@@ -797,12 +797,25 @@ def check_ponytail_linter(
         if not is_test_file and mode in ("ultra", "full"):
             findings = audit_npm_dependencies(patched_code)
             if findings:
-                first = findings[0]
-                raise GuardrailViolation(
-                    gate_name="Gate 1.5 Ponytail Linter",
-                    message=f"Unneeded npm dependency detected: {first['message']}",
-                    details=first,
-                )
+                # In full mode with existing package.json, only block newly added unneeded dependencies
+                if mode == "full" and original_code.strip():
+                    orig_deps: Set[str] = set()
+                    try:
+                        orig_data = json.loads(original_code) if isinstance(original_code, str) else original_code
+                        for sec in ("dependencies", "devDependencies", "peerDependencies"):
+                            if sec in orig_data and isinstance(orig_data[sec], dict):
+                                orig_deps.update(orig_data[sec].keys())
+                    except Exception:
+                        pass
+                    findings = [f for f in findings if f.get("package") not in orig_deps]
+
+                if findings:
+                    first = findings[0]
+                    raise GuardrailViolation(
+                        gate_name="Gate 1.5 Ponytail Linter",
+                        message=f"Unneeded npm dependency detected: {first['message']}",
+                        details=first,
+                    )
         return
 
     # --- Polyglot JS/TS import checking ---
@@ -810,16 +823,20 @@ def check_ponytail_linter(
         js_import_re = re.compile(r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""")
         imported_pkgs = set()
         for m in js_import_re.finditer(patched_code):
-            pkg = m.group(1) or m.group(2)
-            if pkg and not pkg.startswith((".", "/")):
-                imported_pkgs.add(pkg.split("/")[0])
+            raw_pkg = m.group(1) or m.group(2)
+            if raw_pkg and not raw_pkg.startswith((".", "/")):
+                parts = raw_pkg.split("/")
+                pkg_name = f"{parts[0]}/{parts[1]}" if raw_pkg.startswith("@") and len(parts) >= 2 else parts[0]
+                imported_pkgs.add(pkg_name)
 
         orig_js_imports = set()
         if original_code.strip():
             for m in js_import_re.finditer(original_code):
-                pkg = m.group(1) or m.group(2)
-                if pkg and not pkg.startswith((".", "/")):
-                    orig_js_imports.add(pkg.split("/")[0])
+                raw_pkg = m.group(1) or m.group(2)
+                if raw_pkg and not raw_pkg.startswith((".", "/")):
+                    parts = raw_pkg.split("/")
+                    pkg_name = f"{parts[0]}/{parts[1]}" if raw_pkg.startswith("@") and len(parts) >= 2 else parts[0]
+                    orig_js_imports.add(pkg_name)
 
         new_js_imports = imported_pkgs - orig_js_imports
         for pkg in new_js_imports:

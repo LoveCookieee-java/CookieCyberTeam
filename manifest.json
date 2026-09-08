@@ -45,7 +45,9 @@
               "binary_triage",
               "containment_incident",
               "dependency_audit",
-              "code_exploration"
+              "code_exploration",
+              "code_simplification",
+              "architecture_audit"
             ],
             "default": "security_audit",
             "description": "Intended action or objective."

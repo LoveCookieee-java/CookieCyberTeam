@@ -1,6 +1,6 @@
 """
 Unit tests for CookieCyberTeam MCP Server JSON-RPC protocol & Tool dispatching.
-Tests all 16 Tools, 8 Resources, 6 Prompts, Mailbox routing, Code Search, and Binary Triage.
+Tests all 19 Tools, 9 Resources, 8 Prompts, Mailbox routing, Code Search, and Binary Triage.
 """
 
 import json

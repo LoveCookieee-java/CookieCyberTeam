@@ -14,7 +14,7 @@
   <a href="https://pypi.org/project/cookie-cyber-team/"><img src="https://img.shields.io/pypi/v/cookie-cyber-team.svg?style=flat-square&color=blue" alt="PyPI version"></a>
   <a href="https://github.com/LoveCookieee-java/CookieCyberTeam/actions"><img src="https://github.com/LoveCookieee-java/CookieCyberTeam/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="#verification--benchmarks"><img src="https://img.shields.io/badge/Tests-314%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
+  <a href="#verification--benchmarks"><img src="https://img.shields.io/badge/Tests-322%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
   <a href="#the-5-patching-guardrails"><img src="https://img.shields.io/badge/Safety-Zero--Deletion%20%7C%20Air--Gapped-red.svg?style=flat-square" alt="Safety"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License"></a>
@@ -351,7 +351,7 @@ Add CookieCyberTeam directly to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/LoveCookieee-java/CookieCyberTeam
-    rev: v1.0.1
+    rev: v1.0.2
     hooks:
       - id: cookiecyber-scan
         args: ["--fail-on", "high"]
@@ -408,7 +408,7 @@ Add CookieCyberTeam to your MCP client configuration (e.g. `claude_desktop_confi
 
 ## Verification & Benchmarks
 
-CookieCyberTeam is verified by **314 automated unit tests** executed across all core defensive engines, achieving a **100% pass rate** in under 8.7 seconds.
+CookieCyberTeam is verified by **322 automated unit tests** executed across all core defensive engines, achieving a **100% pass rate** in under 9.8 seconds.
 
 | Test Suite Module | Target Component Tested | Test Count | Pass Rate |
 | :--- | :--- | :--- | :--- |
@@ -422,8 +422,8 @@ CookieCyberTeam is verified by **314 automated unit tests** executed across all 
 | `tests/test_project_profiler.py` | Sub-5ms stack discovery, cognitive anchor guide | 20 | 100% |
 | `tests/test_soc_rules.py` | Dynamic MITRE ATT&CK detection engine & playbooks | 24 | 100% |
 | `tests/test_mcp_server.py` | JSON-RPC 2.0 stdio protocol, 19 Tools, 9 Resources, 8 Prompts | 29 | 100% |
-| `tests/test_ponytail_engine.py` | 7-Rung Ladder, Polyglot stdlib/native, AST YAGNI, Ponytail modes | 23 | 100% |
-| **Consolidated Total** | **Entire CookieCyberTeam Defensive Engine** | **314 Tests** | **100% Passed** |
+| `tests/test_ponytail_engine.py` | 7-Rung Ladder, Polyglot stdlib/native, AST YAGNI, Ponytail modes | 31 | 100% |
+| **Consolidated Total** | **Entire CookieCyberTeam Defensive Engine** | **322 Tests** | **100% Passed** |
 
 ```bash
 # Run server diagnostic self-test
