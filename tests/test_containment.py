@@ -7,6 +7,7 @@ firewall rule generation (Windows, Linux, DNS), and safe process tree terminatio
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -70,6 +71,11 @@ class TestContainment(unittest.TestCase):
 
             # Verify on-disk bytes in vault are XOR-scrambled
             enc_path = Path(res["quarantine_path"])
+            if os.name != "nt":
+                try:
+                    os.chmod(enc_path, stat.S_IRUSR)
+                except Exception:
+                    pass
             enc_bytes = enc_path.read_bytes()
             self.assertNotEqual(enc_bytes, original_data)
             expected_enc = bytes([b ^ XOR_KEY for b in original_data])
@@ -289,6 +295,11 @@ class TestContainment(unittest.TestCase):
             vault2 = ws2 / ".quarantine_relocated"
             vault2.mkdir(parents=True, exist_ok=True)
             for f in vault1.iterdir():
+                if os.name != "nt":
+                    try:
+                        os.chmod(f, stat.S_IRUSR)
+                    except Exception:
+                        pass
                 (vault2 / f.name).write_bytes(f.read_bytes())
 
             dest2 = ws2 / "restored_from_relocated.bin"

@@ -58,7 +58,7 @@ cvss_version = "4.0"
             self.assertIn("third_party", cfg.exclude_dirs)
             self.assertEqual(cfg.shannon_entropy_threshold, 7.8)
             self.assertEqual(cfg.cvss_version, "4.0")
-            self.assertEqual(cfg.config_source, str(toml_path))
+            self.assertEqual(cfg.config_source, str(toml_path.resolve()))
 
     def test_load_from_json_file(self):
         """Verify parsing configuration from cookiecyber.json."""
