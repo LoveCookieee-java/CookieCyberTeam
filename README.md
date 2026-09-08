@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/LoveCookieee-java/CookieCyberTeam/main/icon.png" alt="CookieCyberTeam Logo" width="96" height="96" />
+  <img src="https://raw.githubusercontent.com/LoveCookieee-java/CookieCyberTeam/main/banner.png" alt="CookieCyberTeam Cyber Shield Banner" width="100%" />
 </p>
 
 # CookieCyberTeam
