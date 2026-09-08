@@ -19,6 +19,15 @@ DEFAULT_RESTRICTED_BRANCHES = {"main", "master", "prod", "production", "release"
 DEFAULT_EXCLUDE_DIRS = {"vendor", "node_modules", ".git", "dist", "build", "__pycache__"}
 DEFAULT_SHANNON_ENTROPY_THRESHOLD = 7.5
 DEFAULT_CVSS_VERSION = "3.1"
+DEFAULT_PONYTAIL_MODE = "full"
+DEFAULT_ENABLE_PONYTAIL_LINTER = True
+PONYTAIL_MODES = {"ultra", "full", "lite", "off"}
+PONYTAIL_DIFF_LIMITS = {
+    "ultra": (25, 150),
+    "full": (50, 250),
+    "lite": (80, 400),
+    "off": ("free", "free"),
+}
 
 
 def _strip_toml_comment(s: str) -> str:
@@ -226,18 +235,38 @@ def normalize_cap_limit(value: Any, default: int) -> Union[int, str]:
 @dataclass
 class CookieCyberConfig:
     """Repository configuration model with defaults and file persistence."""
-    diff_cap_limit: Union[int, str] = DEFAULT_DIFF_CAP_LIMIT
-    new_file_cap_limit: Union[int, str] = DEFAULT_NEW_FILE_CAP_LIMIT
+    diff_cap_limit: Optional[Union[int, str]] = None
+    new_file_cap_limit: Optional[Union[int, str]] = None
     restricted_branches: Set[str] = field(default_factory=lambda: set(DEFAULT_RESTRICTED_BRANCHES))
     exclude_dirs: Set[str] = field(default_factory=lambda: set(DEFAULT_EXCLUDE_DIRS))
     shannon_entropy_threshold: float = DEFAULT_SHANNON_ENTROPY_THRESHOLD
     cvss_version: str = DEFAULT_CVSS_VERSION
+    ponytail_mode: str = DEFAULT_PONYTAIL_MODE
+    enable_ponytail_linter: bool = DEFAULT_ENABLE_PONYTAIL_LINTER
     config_source: Optional[str] = None
 
     def __post_init__(self):
+        # Normalize Ponytail mode
+        mode = str(self.ponytail_mode).strip().lower()
+        if mode not in PONYTAIL_MODES:
+            mode = DEFAULT_PONYTAIL_MODE
+        self.ponytail_mode = mode
+
+        default_diff, default_new = PONYTAIL_DIFF_LIMITS.get(
+            self.ponytail_mode,
+            (DEFAULT_DIFF_CAP_LIMIT, DEFAULT_NEW_FILE_CAP_LIMIT)
+        )
+        if self.diff_cap_limit is None:
+            self.diff_cap_limit = default_diff
+        if self.new_file_cap_limit is None:
+            self.new_file_cap_limit = default_new
+
+        if self.ponytail_mode == "off":
+            self.enable_ponytail_linter = False
+
         # Normalize and validate types
-        self.diff_cap_limit = normalize_cap_limit(self.diff_cap_limit, DEFAULT_DIFF_CAP_LIMIT)
-        self.new_file_cap_limit = normalize_cap_limit(self.new_file_cap_limit, DEFAULT_NEW_FILE_CAP_LIMIT)
+        self.diff_cap_limit = normalize_cap_limit(self.diff_cap_limit, default_diff)
+        self.new_file_cap_limit = normalize_cap_limit(self.new_file_cap_limit, default_new)
         self.shannon_entropy_threshold = max(0.0, min(8.0, float(self.shannon_entropy_threshold)))
         cvss_v = str(self.cvss_version).strip()
         self.cvss_version = cvss_v if cvss_v in ("3.0", "3.1", "4.0") else DEFAULT_CVSS_VERSION
@@ -259,6 +288,8 @@ class CookieCyberConfig:
             "exclude_dirs": sorted(list(self.exclude_dirs)),
             "shannon_entropy_threshold": self.shannon_entropy_threshold,
             "cvss_version": self.cvss_version,
+            "ponytail_mode": self.ponytail_mode,
+            "enable_ponytail_linter": self.enable_ponytail_linter,
             "config_source": self.config_source,
         }
 
@@ -280,14 +311,17 @@ class CookieCyberConfig:
                     config_data.setdefault(k, v)
 
         return cls(
-            diff_cap_limit=config_data.get("diff_cap_limit", DEFAULT_DIFF_CAP_LIMIT),
-            new_file_cap_limit=config_data.get("new_file_cap_limit", DEFAULT_NEW_FILE_CAP_LIMIT),
+            diff_cap_limit=config_data.get("diff_cap_limit"),
+            new_file_cap_limit=config_data.get("new_file_cap_limit"),
             restricted_branches=config_data.get("restricted_branches", set(DEFAULT_RESTRICTED_BRANCHES)),
             exclude_dirs=config_data.get("exclude_dirs", set(DEFAULT_EXCLUDE_DIRS)),
             shannon_entropy_threshold=config_data.get("shannon_entropy_threshold", DEFAULT_SHANNON_ENTROPY_THRESHOLD),
             cvss_version=config_data.get("cvss_version", DEFAULT_CVSS_VERSION),
+            ponytail_mode=config_data.get("ponytail_mode", DEFAULT_PONYTAIL_MODE),
+            enable_ponytail_linter=config_data.get("enable_ponytail_linter", DEFAULT_ENABLE_PONYTAIL_LINTER),
             config_source=source,
         )
+
 
     @classmethod
     def load_from_file(cls, file_path: Union[str, Path]) -> CookieCyberConfig:

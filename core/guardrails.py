@@ -27,6 +27,17 @@ from core.config import (
     DEFAULT_RESTRICTED_BRANCHES,
     normalize_cap_limit,
 )
+from core.platform_native import (
+    PYTHON_STDLIB_EQUIVALENTS,
+    JAVASCRIPT_NATIVE_EQUIVALENTS,
+    get_stdlib_equivalent,
+    get_js_native_equivalent,
+    is_stateless_utility_class,
+    is_shallow_wrapper_function,
+    audit_ast_yagni,
+    audit_npm_dependencies,
+)
+from core.sca_scanner import SCAScanner
 from core.semgrep_adapter import SemgrepAdapter
 
 
@@ -751,12 +762,7 @@ def check_zero_deletion(patched_code: str, file_path: str = "") -> None:
             )
 
 
-STDLIB_EQUIVALENTS = {
-    "requests": "urllib.request",
-    "pytz": "zoneinfo",
-    "simplejson": "json",
-    "mock": "unittest.mock",
-}
+STDLIB_EQUIVALENTS = PYTHON_STDLIB_EQUIVALENTS
 
 
 def check_ponytail_linter(
@@ -764,20 +770,91 @@ def check_ponytail_linter(
     patched_code: str,
     file_path: str = "",
     repo_path: Optional[Union[str, Path]] = None,
+    mode: str = "full",
+    enabled: bool = True,
 ) -> None:
     """
     Gate 1.5: Ponytail Linter (Zero-Bloat Gate).
     Enforces the Ponytail Principle:
     1. Rejects dead code (functions/classes added without callers or __all__ export).
-    2. Prioritizes Python standard library over unlisted 3rd-party dependencies.
+    2. Prioritizes Python standard library and native Web/Node APIs over unlisted 3rd-party dependencies.
+    3. Prunes over-engineering (stateless utility classes, shallow wrapper functions) based on intensity mode.
     """
+    if not enabled or mode == "off":
+        return
+
     p = Path(file_path)
-    # Skip dead code checks on test files or fixtures
+    # Skip dead code and YAGNI checks on test files or fixtures
     is_test_file = "test" in p.name.lower() or "tests" in [part.lower() for part in p.parts]
 
     ext = p.suffix.lower()
     is_python = ext in (".py", ".pyw") or file_path in ("", "patched_file.py")
+    is_js_ts = ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+    is_package_json = p.name.lower() == "package.json"
 
+    # --- Polyglot npm checking for package.json ---
+    if is_package_json:
+        if not is_test_file and mode in ("ultra", "full"):
+            findings = audit_npm_dependencies(patched_code)
+            if findings:
+                first = findings[0]
+                raise GuardrailViolation(
+                    gate_name="Gate 1.5 Ponytail Linter",
+                    message=f"Unneeded npm dependency detected: {first['message']}",
+                    details=first,
+                )
+        return
+
+    # --- Polyglot JS/TS import checking ---
+    if is_js_ts and not is_test_file:
+        js_import_re = re.compile(r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""")
+        imported_pkgs = set()
+        for m in js_import_re.finditer(patched_code):
+            pkg = m.group(1) or m.group(2)
+            if pkg and not pkg.startswith((".", "/")):
+                imported_pkgs.add(pkg.split("/")[0])
+
+        orig_js_imports = set()
+        if original_code.strip():
+            for m in js_import_re.finditer(original_code):
+                pkg = m.group(1) or m.group(2)
+                if pkg and not pkg.startswith((".", "/")):
+                    orig_js_imports.add(pkg.split("/")[0])
+
+        new_js_imports = imported_pkgs - orig_js_imports
+        for pkg in new_js_imports:
+            equiv = get_js_native_equivalent(pkg)
+            if equiv:
+                # Check package.json in workspace
+                is_listed = False
+                search_dirs = [p.parent, *p.parents] if file_path else []
+                if repo_path:
+                    search_dirs.insert(0, Path(repo_path))
+                for d in search_dirs:
+                    pkg_f = d / "package.json"
+                    if pkg_f.is_file():
+                        try:
+                            pj = json.loads(pkg_f.read_text(encoding="utf-8", errors="ignore"))
+                            all_deps = {}
+                            all_deps.update(pj.get("dependencies", {}))
+                            all_deps.update(pj.get("devDependencies", {}))
+                            if pkg in all_deps:
+                                is_listed = True
+                                break
+                        except Exception:
+                            pass
+                if not is_listed or mode == "ultra":
+                    raise GuardrailViolation(
+                        gate_name="Gate 1.5 Ponytail Linter",
+                        message=(
+                            f"3rd-party JS library '{pkg}' imported when native API '{equiv}' is available. "
+                            "Prioritize native platform features (Ponytail Principle)."
+                        ),
+                        details={"imported_package": pkg, "native_alternative": equiv, "file": file_path},
+                    )
+        return
+
+    # --- Python analysis ---
     if not is_python:
         return
 
@@ -817,8 +894,31 @@ def check_ponytail_linter(
                             if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
                                 all_exports.add(elt.value)
 
-    # 1. Dead Code Check (YAGNI)
+    # 1. AST YAGNI / Over-Engineering Check
     if not is_test_file:
+        yagni_findings = audit_ast_yagni(patched_ast)
+        if mode == "ultra":
+            # In ultra mode: strictly reject any stateless utility classes or shallow wrappers
+            if yagni_findings:
+                first = yagni_findings[0]
+                raise GuardrailViolation(
+                    gate_name="Gate 1.5 Ponytail Linter",
+                    message=f"[Ultra Mode] {first['message']}",
+                    details=first,
+                )
+        elif mode == "full":
+            # In full mode: block newly introduced stateless classes and shallow wrappers
+            for item in yagni_findings:
+                sym_name = item.get("name")
+                if sym_name and sym_name in new_defs:
+                    raise GuardrailViolation(
+                        gate_name="Gate 1.5 Ponytail Linter",
+                        message=f"{item['message']}",
+                        details=item,
+                    )
+
+    # 2. Dead Code Check (YAGNI)
+    if not is_test_file and mode in ("ultra", "full"):
         for sym in new_defs:
             if sym in all_exports:
                 continue
@@ -838,7 +938,7 @@ def check_ponytail_linter(
                     details={"dead_symbol": sym, "file": file_path},
                 )
 
-    # 2. Stdlib Prioritization
+    # 3. Stdlib Prioritization
     orig_imports: Set[str] = set()
     if orig_ast:
         for n in ast.walk(orig_ast):
@@ -857,10 +957,13 @@ def check_ponytail_linter(
             patched_imports.add(n.module.split(".")[0])
 
     new_imports = patched_imports - orig_imports
+    sca_scanner = SCAScanner()
+
     for imp in new_imports:
-        if imp in STDLIB_EQUIVALENTS:
-            equiv = STDLIB_EQUIVALENTS[imp]
-            # Check if declared in project dependencies
+        clean_imp = imp.lower().replace("_", "-")
+        equiv = get_stdlib_equivalent(imp)
+        if equiv:
+            # Check if declared in project dependencies using SCAScanner parser
             is_listed = False
             search_dirs = [p.parent, *p.parents] if file_path else []
             if repo_path:
@@ -868,12 +971,14 @@ def check_ponytail_linter(
             for d in search_dirs:
                 req_f = d / "requirements.txt"
                 if req_f.is_file():
-                    if imp.lower() in req_f.read_text(encoding="utf-8", errors="ignore").lower():
+                    req_deps = sca_scanner.parse_requirements_txt(req_f.read_text(encoding="utf-8", errors="ignore"))
+                    if clean_imp in req_deps or imp.lower() in req_deps:
                         is_listed = True
                         break
                 pyp_f = d / "pyproject.toml"
                 if pyp_f.is_file():
-                    if imp.lower() in pyp_f.read_text(encoding="utf-8", errors="ignore").lower():
+                    pyp_deps = sca_scanner.parse_pyproject_toml(pyp_f.read_text(encoding="utf-8", errors="ignore"))
+                    if clean_imp in pyp_deps or imp.lower() in pyp_deps:
                         is_listed = True
                         break
             if not is_listed:
@@ -885,6 +990,7 @@ def check_ponytail_linter(
                     ),
                     details={"imported_package": imp, "stdlib_alternative": equiv, "file": file_path},
                 )
+
 
 
 class TransactionalPatchSession:
@@ -956,8 +1062,15 @@ class SafePatchManager:
         restricted_branches: Optional[Set[str]] = None,
         workspace_root: Optional[Union[str, Path]] = None,
         allowed_roots: Optional[List[Union[str, Path]]] = None,
+        ponytail_mode: Optional[str] = None,
+        enable_ponytail_linter: Optional[bool] = None,
     ):
         self.config = config or CookieCyberConfig()
+        self.ponytail_mode = ponytail_mode or getattr(self.config, "ponytail_mode", "full")
+        self.enable_ponytail_linter = (
+            enable_ponytail_linter if enable_ponytail_linter is not None
+            else getattr(self.config, "enable_ponytail_linter", True)
+        )
         raw_diff_cap = diff_cap if diff_cap is not None else self.config.diff_cap_limit
         raw_new_file_cap = new_file_cap if new_file_cap is not None else self.config.new_file_cap_limit
         self.diff_cap = normalize_cap_limit(raw_diff_cap, DEFAULT_DIFF_CAP_LIMIT)
@@ -1253,7 +1366,14 @@ class SafePatchManager:
         check_zero_deletion(final_patched, file_path=str(target))
 
         # Gate 1.5: Ponytail Linter
-        check_ponytail_linter(original_code, final_patched, file_path=str(target), repo_path=repo)
+        check_ponytail_linter(
+            original_code,
+            final_patched,
+            file_path=str(target),
+            repo_path=repo,
+            mode=self.ponytail_mode,
+            enabled=self.enable_ponytail_linter,
+        )
 
         # Gate 1: Diff Cap
         diff_stats = self.check_diff_cap(
@@ -1369,7 +1489,14 @@ class SafePatchManager:
         check_zero_deletion(final_patched, file_path=str(target))
 
         # Gate 1.5: Ponytail Linter
-        check_ponytail_linter(original_code, final_patched, file_path=str(target), repo_path=repo)
+        check_ponytail_linter(
+            original_code,
+            final_patched,
+            file_path=str(target),
+            repo_path=repo,
+            mode=self.ponytail_mode,
+            enabled=self.enable_ponytail_linter,
+        )
 
         # 1. Gate 1: Diff Cap
         diff_stats = self.check_diff_cap(

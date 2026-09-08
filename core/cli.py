@@ -143,6 +143,31 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
     return 0 if res.get("success") else 1
 
 
+def cmd_ponytail(args: argparse.Namespace) -> int:
+    """Execute Ponytail audit, review, debt scan, or print decision ladder."""
+    subaction = getattr(args, "action", "audit")
+    if subaction == "ladder":
+        from server import PONYTAIL_LADDER_RESOURCE
+        print(PONYTAIL_LADDER_RESOURCE)
+        return 0
+
+    from server import CookieCyberMCPServer
+    server = CookieCyberMCPServer()
+    if subaction == "audit":
+        res = server.tool_ponytail_audit({"path": getattr(args, "path", "."), "mode": getattr(args, "mode", "full")})
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("success") else 1
+    elif subaction == "review":
+        res = server.tool_ponytail_review({"file_path": getattr(args, "file", None), "mode": getattr(args, "mode", "full")})
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("success") else 1
+    elif subaction == "debt":
+        res = server.tool_ponytail_debt({"path": getattr(args, "path", ".")})
+        print(json.dumps(res, indent=2))
+        return 0 if res.get("success") else 1
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m core.cli",
@@ -173,6 +198,13 @@ def build_parser() -> argparse.ArgumentParser:
     quar_parser.add_argument("--file", "-f", type=str, required=True, help="Path to suspicious file to quarantine")
     quar_parser.add_argument("--quarantine-dir", "-d", type=str, default=None, help="Optional custom quarantine directory")
 
+    # ponytail sub-command
+    pony_parser = subparsers.add_parser("ponytail", help="Ponytail Lazy Senior Dev auditor, code review, debt scanner, and decision ladder")
+    pony_parser.add_argument("action", choices=["audit", "review", "debt", "ladder"], default="audit", nargs="?", help="Action to perform (default: audit)")
+    pony_parser.add_argument("--path", "-p", type=str, default=".", help="Path to audit or scan for debt (default: .)")
+    pony_parser.add_argument("--file", "-f", type=str, default=None, help="Path to file to review")
+    pony_parser.add_argument("--mode", "-m", choices=["ultra", "full", "lite"], default="full", help="Ponytail intensity mode (default: full)")
+
     return parser
 
 
@@ -192,6 +224,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_contain(args)
     elif args.command == "quarantine":
         return cmd_quarantine(args)
+    elif args.command == "ponytail":
+        return cmd_ponytail(args)
+
+    return 0
 
     return 0
 

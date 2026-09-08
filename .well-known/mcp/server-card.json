@@ -1,7 +1,7 @@
 {
   "serverInfo": {
     "name": "cookie-cyber-team",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "description": "Single Unified Intelligent MCP Server, Defensive Guardrails & Cyber Defense System for autonomous vulnerability remediation, inter-procedural taint flow analysis, air-gapped binary triage, and zero-regression safe patch verification.",
     "iconUrl": "https://raw.githubusercontent.com/LoveCookieee-java/CookieCyberTeam/main/icon.png"
   },
@@ -1030,6 +1030,160 @@
         ],
         "priority": 1.0
       }
+    },
+    {
+      "name": "mcp_ponytail_review",
+      "description": "Reviews code or diff against the Ponytail 7-Rung Decision Ladder, tagging findings with delete:, stdlib:, native:, yagni:, shrink: and estimating LOC reduction.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "Source code snippet to review against Ponytail rules."
+          },
+          "file_path": {
+            "type": "string",
+            "description": "Optional file path to load code from or provide file context."
+          },
+          "diff": {
+            "type": "string",
+            "description": "Optional unified diff string to review."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ultra",
+              "full",
+              "lite"
+            ],
+            "description": "Ponytail intensity mode (default: 'full').",
+            "default": "full"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
+      }
+    },
+    {
+      "name": "mcp_ponytail_audit",
+      "description": "Audits repository workspace files for dead code, unneeded dependencies, and AST YAGNI violations, ranking files by potential LOC reduction.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Target workspace directory or file to audit (defaults to workspace root)."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "ultra",
+              "full",
+              "lite"
+            ],
+            "description": "Ponytail intensity mode (default: 'full').",
+            "default": "full"
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
+      }
+    },
+    {
+      "name": "mcp_ponytail_debt",
+      "description": "Scans workspace for ponytail: debt comments (# ponytail: or // ponytail:) and compiles a structured Debt Ledger.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Target directory to scan for ponytail debt comments (defaults to workspace root)."
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Execution status ('success' or 'error')."
+          },
+          "message": {
+            "type": "string",
+            "description": "Human-readable summary of operation results."
+          },
+          "data": {
+            "type": "object",
+            "description": "Structured findings or response payload."
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "annotations": {
+        "readOnly": true,
+        "destructive": false,
+        "audience": [
+          "user",
+          "assistant"
+        ],
+        "priority": 1.0
+      }
     }
   ],
   "resources": [
@@ -1080,6 +1234,12 @@
       "name": "CookieCyberTeam Active Security Guardrails & Gate Policies",
       "description": "Active runtime configuration of all 5 Zero-Trust Guardrail Gates (Syntax, Ponytail Linter, Diff Cap, SAST, Zero-Deletion).",
       "mimeType": "application/json"
+    },
+    {
+      "uri": "mcp://rules/ponytail-ladder",
+      "name": "Ponytail The Lazy Senior Dev Decision Ladder & Native Playbook",
+      "description": "7-Rung decision ladder, standard library / native API lookup tables, and intensity mode specifications.",
+      "mimeType": "text/markdown"
     }
   ],
   "prompts": [
@@ -1171,6 +1331,43 @@
           "name": "artifact_path",
           "description": "Path to suspicious file or binary.",
           "required": true
+        }
+      ]
+    },
+    {
+      "name": "mcp_prompt_ponytail_review",
+      "description": "Senior Pragmatic Reviewer: Audits code/diff against Ponytail 7-Rung Ladder, tagging findings with delete:, stdlib:, native:, yagni:, shrink:.",
+      "arguments": [
+        {
+          "name": "target_file",
+          "description": "Target source file to review.",
+          "required": true
+        },
+        {
+          "name": "diff",
+          "description": "Optional unified diff to review.",
+          "required": false
+        }
+      ]
+    },
+    {
+      "name": "mcp_prompt_ponytail_minimalist",
+      "description": "Minimalist Code Generator: Generates the shortest working diff strictly prioritizing stdlib/native features and zero speculative code.",
+      "arguments": [
+        {
+          "name": "task_description",
+          "description": "Task or bug requirement to implement.",
+          "required": true
+        },
+        {
+          "name": "target_file",
+          "description": "Target source file.",
+          "required": true
+        },
+        {
+          "name": "mode",
+          "description": "Ponytail intensity mode ('ultra', 'full', 'lite').",
+          "required": false
         }
       ]
     }

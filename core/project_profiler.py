@@ -212,6 +212,8 @@ class ProjectGenomeProfiler:
             "risk_profile": risk_profile,
             "diff_cap_limit": self.config.diff_cap_limit,
             "new_file_cap_limit": self.config.new_file_cap_limit,
+            "ponytail_mode": getattr(self.config, "ponytail_mode", "full"),
+            "enable_ponytail_linter": getattr(self.config, "enable_ponytail_linter", True),
             "discovery_time_ms": round(elapsed_ms, 2),
         }
 
@@ -298,6 +300,18 @@ class ProjectGenomeProfiler:
                 "mcp_search_code",
                 "mcp_adaptive_guide",
             ],
+            "code_simplification": [
+                "mcp_search_code",
+                "mcp_ponytail_review",
+                "mcp_preview_surgical_patch",
+                "mcp_apply_safe_patch",
+            ],
+            "architecture_audit": [
+                "mcp_ponytail_audit",
+                "mcp_ponytail_debt",
+                "mcp_audit_dependencies",
+                "mcp_scan_vulnerabilities",
+            ],
         }
 
         chosen_playbook = playbooks.get(
@@ -308,10 +322,17 @@ class ProjectGenomeProfiler:
         diff_cap_display = "unlimited ('free')" if prof.get("diff_cap_limit") == "free" else f"maximum {prof.get('diff_cap_limit')} lines"
         new_file_display = "unlimited ('free')" if prof.get("new_file_cap_limit") == "free" else f"maximum {prof.get('new_file_cap_limit')} lines"
 
+        p_mode = prof.get("ponytail_mode", "full")
+        p_enabled = prof.get("enable_ponytail_linter", True)
+        if p_enabled and p_mode != "off":
+            gate_1_5_msg = f"Gate 1.5 (Ponytail Linter): Active in '{p_mode}' mode. Dead code, unlisted dependencies, and AST YAGNI pruning enforced."
+        else:
+            gate_1_5_msg = "Gate 1.5 (Ponytail Linter): Deactivated ('off' mode)."
+
         active_guardrails = [
             f"Gate 0 (Single-Committer): Only Lead Orchestrator can apply patches directly.",
             f"Gate 1 (Diff Cap): {diff_cap_display} for modified files, {new_file_display} for new files (Ponytail Principle).",
-            f"Gate 1.5 (Ponytail Linter): Reject dead code and prioritize standard library over unlisted dependencies.",
+            gate_1_5_msg,
             f"Gate 2 (Zero-Regression SAST): No new CWE vulnerabilities may be introduced.",
             f"Gate 3 (Git Branch Isolation): Direct commits/patches to '{prof['git']['branch']}' {'are BLOCKED' if prof['git']['is_restricted'] else 'permitted'}.",
             f"Gate 4 (Zero-Deletion Invariant): Absolute prohibition of file deletion primitives (os.remove, unlink, rmdir, del, rm).",

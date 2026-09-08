@@ -7,7 +7,10 @@ zero-regression patching, air-gapped binary triage, and multi-agent coordination
 
 from __future__ import annotations
 import argparse
+import ast
 import json
+import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -32,17 +35,94 @@ from core.sandbox_runner import SandboxRunner
 from core.sca_scanner import SCAScanner
 from core.semgrep_adapter import SemgrepAdapter
 from core.soc_rules import SOCRuleEngine
+from core.platform_native import (
+    PYTHON_STDLIB_EQUIVALENTS,
+    JAVASCRIPT_NATIVE_EQUIVALENTS,
+    get_stdlib_equivalent,
+    get_js_native_equivalent,
+    is_stateless_utility_class,
+    is_shallow_wrapper_function,
+    audit_ast_yagni,
+    audit_npm_dependencies,
+)
 from core.tool_indexer import ToolchainIndexer
 
 
 SERVER_NAME = "cookie-cyber-team"
-SERVER_VERSION = "1.0.1"
+SERVER_VERSION = "1.0.2"
 PROTOCOL_VERSION = "2024-11-05"
 
 
 # ---------------------------------------------------------------------------
-# Static Security Resources Content
+# Static Security & Ponytail Resources Content
 # ---------------------------------------------------------------------------
+
+PONYTAIL_LADDER_RESOURCE = """# Ponytail: The Lazy Senior Developer Decision Ladder & Code Hygiene Rules
+
+> "The best code is the code you never wrote." — DietrichGebert/ponytail
+
+## 1. The 7-Rung Decision Ladder (Execute in Strict Order)
+
+When solving any engineering requirement, stop at the FIRST rung that satisfies it:
+
+1. **Rung 1: YAGNI (Does this need to exist?)**
+   - Challenge speculative requirements. If the user asks for X, do NOT build hooks or abstract factories for Y and Z.
+   - Tag: `yagni:`
+
+2. **Rung 2: Codebase Reuse (Can we reuse existing code?)**
+   - Search the workspace before writing new utility functions or types.
+   - Tag: `shrink:`
+
+3. **Rung 3: Standard Library (Does the standard library do it?)**
+   - Prefer language stdlib over third-party packages or reinvented wheels.
+   - Python: `requests/httpx` -> `urllib.request`, `attrs` -> `dataclasses`, `pytz` -> `zoneinfo`, `simplejson` -> `json`.
+   - Tag: `stdlib:`
+
+4. **Rung 4: Native Platform Features (Can native platform/HTML/CSS/DB handle it?)**
+   - Prefer HTML semantic tags (`<dialog>`, `<details>`) and CSS over JS UI libraries.
+   - JS/TS: `lodash.clonedeep` -> `structuredClone`, `uuid` -> `crypto.randomUUID()`, `qs` -> `URLSearchParams`.
+   - Prefer SQL constraints (`UNIQUE`, `FOREIGN KEY`, `CHECK`) over procedural check logic.
+   - Tag: `native:`
+
+5. **Rung 5: Installed Dependencies (Does an installed package do it?)**
+   - Use packages already present in project manifests (`requirements.txt`, `package.json`, `pom.xml`).
+   - Tag: `shrink:`
+
+6. **Rung 6: One-Liner & Direct Calls (Can it be written in a clean single line?)**
+   - Do NOT wrap simple operations in single-use helper functions or stateless utility classes.
+   - Tag: `shrink:` / `yagni:`
+
+7. **Rung 7: Minimum Viable Code (Write shortest working diff)**
+   - Decompose into minimal, atomic, surgical edits.
+   - Tag: `shrink:`
+
+---
+
+## 2. Standard Review Tags
+- `delete:` Dead code, unreferenced symbols, commented-out blocks.
+- `stdlib:` 3rd-party library replaceable with standard library.
+- `native:` Library or abstraction replaceable with platform native Web/Node/DB features.
+- `yagni:` Speculative abstraction, stateless utility class, or shallow wrapper.
+- `shrink:` Verbose boilerplate that can be shortened or inlined.
+
+---
+
+## 3. Intensity Modes Matrix
+- `ultra`: 25-line diff cap, zero intermediate wrappers/classes, 100% native platform/stdlib usage.
+- `full` (Default): 50-line diff cap, dead code rejection, unlisted dependency blocking.
+- `lite`: 80-line diff cap, soft warnings for architectural flexibility.
+- `off`: Deactivates Ponytail linter, diff cap set to 'free'.
+
+---
+
+## 4. Invariant Safety Standard: "Lazy, Not Negligent"
+Ponytail never sacrifices security or data integrity for brevity:
+- Never skip input validation or sanitization.
+- Never bypass authentication, authorization, or encryption.
+- Maintain clear error boundaries and proper exception propagation.
+- Zero file deletion invariant: Never delete user files without consent.
+"""
+
 
 SECURITY_STANDARDS_RESOURCE = """# CookieCyberTeam Security Standards & Defensive Guardrails
 
@@ -355,6 +435,299 @@ class CookieCyberMCPServer:
             res["sarif"] = self.scanner.to_sarif(findings)
 
         return res
+
+    def tool_ponytail_review(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Review source code or diff against the Ponytail 7-Rung Decision Ladder."""
+        code = args.get("code")
+        file_path = args.get("file_path", "")
+        diff_text = args.get("diff")
+        mode = str(args.get("mode") or getattr(self.config, "ponytail_mode", "full")).lower()
+
+        target_content = ""
+        if code:
+            target_content = code
+        elif file_path:
+            p = Path(file_path)
+            if not p.is_absolute():
+                p = (self.workspace_root / p).resolve()
+            if p.is_file():
+                target_content = p.read_text(encoding="utf-8", errors="replace")
+        elif diff_text:
+            added_lines = [l[1:] for l in diff_text.splitlines() if l.startswith("+") and not l.startswith("+++")]
+            target_content = "\n".join(added_lines)
+
+        if not target_content.strip():
+            return {
+                "success": False,
+                "error": "No reviewable content provided. Pass 'code', 'file_path', or 'diff'.",
+            }
+
+        findings: List[Dict[str, Any]] = []
+        loc_savings = 0
+        tag_counts = {"delete:": 0, "stdlib:": 0, "native:": 0, "yagni:": 0, "shrink:": 0}
+
+        ext = Path(file_path).suffix.lower() if file_path else ".py"
+        is_python = ext in (".py", ".pyw") or not ext
+        is_js_ts = ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs")
+
+        if is_python:
+            try:
+                tree = ast.parse(target_content, filename=file_path or "<review>")
+                # 1. YAGNI AST audit
+                y_findings = audit_ast_yagni(tree)
+                for f in y_findings:
+                    findings.append(f)
+                    tag = f.get("tag", "yagni:")
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                    loc_savings += 5
+
+                # 2. Stdlib audit
+                for n in ast.walk(tree):
+                    imports_to_check = []
+                    if isinstance(n, ast.Import):
+                        for alias in n.names:
+                            imports_to_check.append((alias.name.split(".")[0], getattr(n, "lineno", 1)))
+                    elif isinstance(n, ast.ImportFrom) and n.module:
+                        imports_to_check.append((n.module.split(".")[0], getattr(n, "lineno", 1)))
+
+                    for pkg, lineno in imports_to_check:
+                        equiv = get_stdlib_equivalent(pkg)
+                        if equiv:
+                            findings.append({
+                                "type": "stdlib_replacement",
+                                "tag": "stdlib:",
+                                "package": pkg,
+                                "stdlib_alternative": equiv,
+                                "line_number": lineno,
+                                "message": f"Package '{pkg}' can be replaced with Python standard library '{equiv}' (Ponytail Rung 3).",
+                                "remediation": f"Remove '{pkg}' from imports and use '{equiv}'.",
+                            })
+                            tag_counts["stdlib:"] += 1
+                            loc_savings += 2
+
+                # 3. Dead code check (unreferenced functions in single file)
+                if not ("test" in file_path.lower()):
+                    defined_names = {}
+                    for n in tree.body:
+                        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                            defined_names[n.name] = n
+
+                    for name, node in defined_names.items():
+                        refs = 0
+                        for n in ast.walk(tree):
+                            if isinstance(n, ast.Name) and n.id == name and n != node:
+                                refs += 1
+                            elif isinstance(n, ast.Attribute) and n.attr == name:
+                                refs += 1
+                        if refs <= 1 and not name.startswith("_"):
+                            exported = False
+                            for stmt in tree.body:
+                                if isinstance(stmt, ast.Assign):
+                                    for t in stmt.targets:
+                                        if isinstance(t, ast.Name) and t.id == "__all__":
+                                            if isinstance(stmt.value, (ast.List, ast.Tuple, ast.Set)):
+                                                for elt in stmt.value.elts:
+                                                    if isinstance(elt, ast.Constant) and elt.value == name:
+                                                        exported = True
+                            if not exported and len(defined_names) > 1:
+                                findings.append({
+                                    "type": "potential_dead_code",
+                                    "tag": "delete:",
+                                    "name": name,
+                                    "line_number": getattr(node, "lineno", 1),
+                                    "message": f"Symbol '{name}' appears unused within this module and is not exported in __all__.",
+                                    "remediation": f"Delete '{name}' if not part of external API.",
+                                })
+                                tag_counts["delete:"] += 1
+                                loc_savings += len(node.body) if hasattr(node, "body") else 3
+            except SyntaxError as e:
+                findings.append({
+                    "type": "syntax_notice",
+                    "tag": "shrink:",
+                    "message": f"Syntax warning: {e.msg} at line {e.lineno}",
+                    "line_number": e.lineno,
+                })
+
+        if is_js_ts:
+            js_re = re.compile(r"""(?:import\s+.*?from\s+['"]([^'"]+)['"]|require\s*\(\s*['"]([^'"]+)['"]\s*\))""")
+            for idx, line in enumerate(target_content.splitlines(), start=1):
+                m = js_re.search(line)
+                if m:
+                    pkg = m.group(1) or m.group(2)
+                    if pkg and not pkg.startswith((".", "/")):
+                        equiv = get_js_native_equivalent(pkg.split("/")[0])
+                        if equiv:
+                            findings.append({
+                                "type": "native_replacement",
+                                "tag": "native:",
+                                "package": pkg,
+                                "native_alternative": equiv,
+                                "line_number": idx,
+                                "message": f"Package '{pkg}' can be replaced with native Web/ECMAScript API '{equiv}' (Ponytail Rung 4).",
+                                "remediation": f"Replace import of '{pkg}' with native '{equiv}'.",
+                            })
+                            tag_counts["native:"] += 1
+                            loc_savings += 3
+
+        # Check for commented-out code
+        commented_code_re = re.compile(r"^\s*(?:#|//)\s*(?:def |class |function |import |const |let |var |return )", re.MULTILINE)
+        for idx, line in enumerate(target_content.splitlines(), start=1):
+            if commented_code_re.match(line):
+                findings.append({
+                    "type": "commented_out_code",
+                    "tag": "delete:",
+                    "line_number": idx,
+                    "code_snippet": line.strip(),
+                    "message": "Commented-out code detected. Ponytail Principle: Delete dead code, version control remembers history.",
+                    "remediation": "Remove commented-out code lines.",
+                })
+                tag_counts["delete:"] += 1
+                loc_savings += 1
+
+        verdict = "CLEAN" if not findings else ("PRUNING_REQUIRED" if mode == "ultra" else "SIMPLIFICATION_RECOMMENDED")
+
+        return {
+            "success": True,
+            "mode": mode,
+            "file_path": file_path or "inline_content",
+            "total_findings": len(findings),
+            "potential_loc_savings": loc_savings,
+            "tags_summary": tag_counts,
+            "verdict": verdict,
+            "findings": findings,
+            "recommendations": [
+                "Walk down the Ponytail Decision Ladder before adding new code.",
+                "Shortest working diff wins. Delete dead code and unneeded wrappers.",
+            ],
+        }
+
+    def tool_ponytail_audit(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Audit repository files for dead code, unneeded dependencies, and LOC reduction potential."""
+        raw_path = args.get("path")
+        target_dir = Path(raw_path).resolve() if raw_path else self.workspace_root
+        if target_dir.is_file():
+            target_dir = target_dir.parent
+
+        mode = str(args.get("mode") or getattr(self.config, "ponytail_mode", "full")).lower()
+        excluded_dirs = getattr(self.config, "exclude_dirs", {"vendor", "node_modules", ".git", "dist", "build", "__pycache__", ".quarantine"})
+
+        audited_files: List[str] = []
+        all_findings: List[Dict[str, Any]] = []
+        file_savings: Dict[str, int] = {}
+        dep_savings: List[Dict[str, Any]] = []
+
+        # Check dependency files
+        req_path = target_dir / "requirements.txt"
+        if req_path.is_file():
+            req_content = req_path.read_text(encoding="utf-8", errors="ignore")
+            req_deps = self.sca_scanner.parse_requirements_txt(req_content)
+            for pkg in req_deps:
+                equiv = get_stdlib_equivalent(pkg)
+                if equiv:
+                    dep_savings.append({
+                        "manifest": "requirements.txt",
+                        "package": pkg,
+                        "tag": "stdlib:",
+                        "stdlib_alternative": equiv,
+                        "message": f"Dependency '{pkg}' in requirements.txt can be replaced with standard library '{equiv}'.",
+                    })
+
+        pkg_json_path = target_dir / "package.json"
+        if pkg_json_path.is_file():
+            npm_findings = audit_npm_dependencies(pkg_json_path.read_text(encoding="utf-8", errors="ignore"))
+            dep_savings.extend(npm_findings)
+
+        # Walk workspace files
+        for root, dirs, files in os.walk(target_dir):
+            dirs[:] = [d for d in dirs if d not in excluded_dirs and not d.startswith(".")]
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in (".py", ".js", ".ts"):
+                    f_path = Path(root) / f
+                    try:
+                        content = f_path.read_text(encoding="utf-8", errors="ignore")
+                        rel_path = str(f_path.relative_to(target_dir))
+                        res = self.tool_ponytail_review({"code": content, "file_path": rel_path, "mode": mode})
+                        audited_files.append(rel_path)
+                        f_findings = res.get("findings", [])
+                        if f_findings:
+                            all_findings.extend(f_findings)
+                            savings = res.get("potential_loc_savings", 0)
+                            if savings > 0:
+                                file_savings[rel_path] = savings
+                    except Exception:
+                        pass
+
+        # Sort files by LOC savings descending
+        ranked_files = sorted(
+            [{"file": k, "potential_loc_savings": v} for k, v in file_savings.items()],
+            key=lambda x: x["potential_loc_savings"],
+            reverse=True,
+        )
+        total_savings = sum(item["potential_loc_savings"] for item in ranked_files)
+
+        return {
+            "success": True,
+            "path": str(target_dir),
+            "mode": mode,
+            "files_audited": len(audited_files),
+            "total_potential_loc_reduction": total_savings,
+            "ranked_files": ranked_files,
+            "findings": all_findings,
+            "dependency_savings": dep_savings,
+        }
+
+    def tool_ponytail_debt(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Scan repository for ponytail: debt comments and return structured Debt Ledger."""
+        raw_path = args.get("path")
+        target_dir = Path(raw_path).resolve() if raw_path else self.workspace_root
+        if target_dir.is_file():
+            target_dir = target_dir.parent
+
+        excluded_dirs = getattr(self.config, "exclude_dirs", {"vendor", "node_modules", ".git", "dist", "build", "__pycache__", ".quarantine"})
+        debt_re = re.compile(r"""(?:#|//|/\*|\*)\s*ponytail:\s*(.*?)(?:\*/|\n|$)""", re.IGNORECASE)
+
+        debt_items: List[Dict[str, Any]] = []
+        tag_counts: Dict[str, int] = {}
+
+        for root, dirs, files in os.walk(target_dir):
+            dirs[:] = [d for d in dirs if d not in excluded_dirs and not d.startswith(".")]
+            for f in files:
+                ext = os.path.splitext(f)[1].lower()
+                if ext in (".py", ".js", ".ts", ".go", ".java", ".rs", ".md", ".toml", ".yaml", ".yml", ".c", ".cpp", ".h"):
+                    f_path = Path(root) / f
+                    try:
+                        lines = f_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+                        for idx, line in enumerate(lines, start=1):
+                            m = debt_re.search(line)
+                            if m:
+                                raw_desc = m.group(1).strip()
+                                tag = "general"
+                                tag_match = re.match(r"^\[([a-zA-Z0-9_\-]+)\]", raw_desc)
+                                if tag_match:
+                                    tag = tag_match.group(1).lower()
+                                    desc = raw_desc[tag_match.end():].strip()
+                                else:
+                                    desc = raw_desc
+
+                                tag_counts[tag] = tag_counts.get(tag, 0) + 1
+                                debt_items.append({
+                                    "file": str(f_path.relative_to(target_dir)),
+                                    "line_number": idx,
+                                    "tag": tag,
+                                    "description": desc or raw_desc,
+                                    "raw_comment": line.strip(),
+                                })
+                    except Exception:
+                        pass
+
+        return {
+            "success": True,
+            "path": str(target_dir),
+            "total_debt_items": len(debt_items),
+            "summary_by_tag": tag_counts,
+            "debt_items": debt_items,
+        }
 
     def tool_execute_sandbox_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run tests under isolated sandbox environment."""
@@ -1048,11 +1421,71 @@ class CookieCyberMCPServer:
                     "required": ["pid"],
                 },
             },
+            {
+                "name": "mcp_ponytail_review",
+                "description": "Reviews code or diff against the Ponytail 7-Rung Decision Ladder, tagging findings with delete:, stdlib:, native:, yagni:, shrink: and estimating LOC reduction.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "code": {
+                            "type": "string",
+                            "description": "Source code snippet to review against Ponytail rules.",
+                        },
+                        "file_path": {
+                            "type": "string",
+                            "description": "Optional file path to load code from or provide file context.",
+                        },
+                        "diff": {
+                            "type": "string",
+                            "description": "Optional unified diff string to review.",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["ultra", "full", "lite"],
+                            "description": "Ponytail intensity mode (default: 'full').",
+                            "default": "full",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "mcp_ponytail_audit",
+                "description": "Audits repository workspace files for dead code, unneeded dependencies, and AST YAGNI violations, ranking files by potential LOC reduction.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Target workspace directory or file to audit (defaults to workspace root).",
+                        },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["ultra", "full", "lite"],
+                            "description": "Ponytail intensity mode (default: 'full').",
+                            "default": "full",
+                        },
+                    },
+                },
+            },
+            {
+                "name": "mcp_ponytail_debt",
+                "description": "Scans workspace for ponytail: debt comments (# ponytail: or // ponytail:) and compiles a structured Debt Ledger.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {
+                            "type": "string",
+                            "description": "Target directory to scan for ponytail debt comments (defaults to workspace root).",
+                        },
+                    },
+                },
+            },
         ]
 
         read_only_tools = {
             "mcp_adaptive_guide", "mcp_scan_vulnerabilities", "mcp_audit_dependencies",
             "mcp_search_code", "mcp_triage_binary", "mcp_preview_surgical_patch",
+            "mcp_ponytail_review", "mcp_ponytail_audit", "mcp_ponytail_debt",
         }
         for t in tools:
             name = t["name"]
@@ -1127,12 +1560,20 @@ class CookieCyberMCPServer:
                 "description": "Active runtime configuration of all 5 Zero-Trust Guardrail Gates (Syntax, Ponytail Linter, Diff Cap, SAST, Zero-Deletion).",
                 "mimeType": "application/json",
             },
+            {
+                "uri": "mcp://rules/ponytail-ladder",
+                "name": "Ponytail The Lazy Senior Dev Decision Ladder & Native Playbook",
+                "description": "7-Rung decision ladder, standard library / native API lookup tables, and intensity mode specifications.",
+                "mimeType": "text/markdown",
+            },
         ]
 
     def read_resource(self, uri: str) -> Dict[str, Any]:
         """Return contents for requested resource URI."""
         if uri == "mcp://rules/security-standards":
             return {"uri": uri, "mimeType": "text/markdown", "text": SECURITY_STANDARDS_RESOURCE}
+        elif uri == "mcp://rules/ponytail-ladder":
+            return {"uri": uri, "mimeType": "text/markdown", "text": PONYTAIL_LADDER_RESOURCE}
         elif uri == "mcp://rules/debugging-mindset":
             return {"uri": uri, "mimeType": "text/markdown", "text": DEBUGGING_MINDSET_RESOURCE}
         elif uri == "mcp://state/agent-context":
@@ -1219,6 +1660,23 @@ class CookieCyberMCPServer:
                     {"name": "artifact_path", "description": "Path to suspicious file or binary.", "required": True},
                 ],
             },
+            {
+                "name": "mcp_prompt_ponytail_review",
+                "description": "Senior Pragmatic Reviewer: Audits code/diff against Ponytail 7-Rung Ladder, tagging findings with delete:, stdlib:, native:, yagni:, shrink:.",
+                "arguments": [
+                    {"name": "target_file", "description": "Target source file to review.", "required": True},
+                    {"name": "diff", "description": "Optional unified diff to review.", "required": False},
+                ],
+            },
+            {
+                "name": "mcp_prompt_ponytail_minimalist",
+                "description": "Minimalist Code Generator: Generates the shortest working diff strictly prioritizing stdlib/native features and zero speculative code.",
+                "arguments": [
+                    {"name": "task_description", "description": "Task or bug requirement to implement.", "required": True},
+                    {"name": "target_file", "description": "Target source file.", "required": True},
+                    {"name": "mode", "description": "Ponytail intensity mode ('ultra', 'full', 'lite').", "required": False},
+                ],
+            },
         ]
 
     def get_prompt(self, name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -1300,6 +1758,31 @@ class CookieCyberMCPServer:
                 "   - File Safety Invariant: Absolute prohibition of unauthorized file deletion.\n"
                 "7. Report containment and eradication plan to Lead Orchestrator via mailbox."
             )
+        elif name == "mcp_prompt_ponytail_review":
+            target = args.get("target_file", "unknown.py")
+            diff = args.get("diff", "")
+            diff_section = f"\nDiff to review:\n{diff}" if diff else "\nInspect the target file directly."
+            content = (
+                f"You are the Senior Pragmatic Reviewer ('The Lazy Senior Dev') reviewing '{target}'.\n"
+                "Evaluate the code against the Ponytail 7-Rung Decision Ladder:\n"
+                "1. Challenge every new line: Does this need to exist (YAGNI)?\n"
+                "2. Tag findings with: `delete:` (dead code), `stdlib:` (replace with Python stdlib), `native:` (replace with Web/Node native), `yagni:` (over-engineering), `shrink:` (LOC reduction).\n"
+                "3. Invariant Safety Standard: Never sacrifice validation, auth, error handling, or security for brevity (Lazy, Not Negligent).\n"
+                f"{diff_section}"
+            )
+        elif name == "mcp_prompt_ponytail_minimalist":
+            task = args.get("task_description", "Requirement")
+            target = args.get("target_file", "unknown.py")
+            mode = args.get("mode", "full")
+            content = (
+                f"You are the Ponytail Minimalist Developer implementing '{task}' in '{target}' (Mode: {mode}).\n"
+                "Rules of Engagement:\n"
+                "1. Shortest working diff wins (Diff Cap: 50 lines in full, 25 in ultra, 80 in lite).\n"
+                "2. Zero unnecessary helper functions, classes, or interfaces.\n"
+                "3. Use Python stdlib / native platform features exclusively when available.\n"
+                "4. Fix the root cause directly; do not add superficial wrapper guards.\n"
+                "5. Maintain 100% test coverage, robust validation, and zero regression."
+            )
         else:
             raise ValueError(f"Unknown prompt name: {name}")
 
@@ -1320,7 +1803,7 @@ class CookieCyberMCPServer:
     def handle_call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         Dispatch a tool call to its respective handler and return structured result dictionary.
-        Supports safe JSON-RPC execution of all 16 registered MCP tools.
+        Supports safe JSON-RPC execution of all 19 registered MCP tools.
         """
         args = arguments or {}
         handler_map: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
@@ -1340,7 +1823,11 @@ class CookieCyberMCPServer:
             "mcp_restore_quarantined_file": self.tool_restore_quarantined_file,
             "mcp_generate_containment_rule": self.tool_generate_containment_rule,
             "mcp_terminate_process": self.tool_terminate_process,
+            "mcp_ponytail_review": self.tool_ponytail_review,
+            "mcp_ponytail_audit": self.tool_ponytail_audit,
+            "mcp_ponytail_debt": self.tool_ponytail_debt,
         }
+
 
         if tool_name not in handler_map:
             raise KeyError(f"Method or tool not found: {tool_name}")
@@ -1476,9 +1963,9 @@ def run_self_test() -> bool:
     print("=== CookieCyberTeam MCP Server Self-Test ===")
     server = CookieCyberMCPServer(db_path=":memory:")
 
-    # 1. Test Tools list (16 Tools)
+    # 1. Test Tools list (19 Tools)
     tools = server.get_tool_definitions()
-    assert len(tools) == 16, f"Expected 16 tools, got {len(tools)}"
+    assert len(tools) == 19, f"Expected 19 tools, got {len(tools)}"
     tool_names = {t["name"] for t in tools}
     assert "mcp_adaptive_guide" in tool_names
     assert "mcp_audit_dependencies" in tool_names
@@ -1491,13 +1978,18 @@ def run_self_test() -> bool:
     assert "mcp_submit_dynamic_sandbox" in tool_names
     assert "mcp_quarantine_artifact" in tool_names
     assert "mcp_generate_containment_rule" in tool_names
+    assert "mcp_ponytail_review" in tool_names
+    assert "mcp_ponytail_audit" in tool_names
+    assert "mcp_ponytail_debt" in tool_names
     print(f"[PASS] Tools verified: {len(tools)} registered ({', '.join(sorted(tool_names))}).")
 
-    # 2. Test Resources list & read (8 Resources)
+    # 2. Test Resources list & read (9 Resources)
     resources = server.get_resource_definitions()
-    assert len(resources) == 8, f"Expected 8 resources, got {len(resources)}"
+    assert len(resources) == 9, f"Expected 9 resources, got {len(resources)}"
     r_standards = server.read_resource("mcp://rules/security-standards")
     assert "CWE-78" in r_standards["text"]
+    r_ponytail = server.read_resource("mcp://rules/ponytail-ladder")
+    assert "Decision Ladder" in r_ponytail["text"]
     r_tool_index = server.read_resource("mcp://state/tool-index")
     assert "Toolchain Index" in r_tool_index["text"]
     r_malware = server.read_resource("mcp://playbooks/malware-triage")
@@ -1510,13 +2002,17 @@ def run_self_test() -> bool:
     assert "gates" in r_active_rules["text"]
     print(f"[PASS] Resources verified: {len(resources)} registered and readable.")
 
-    # 3. Test Prompts list & get (6 Prompts)
+    # 3. Test Prompts list & get (8 Prompts)
     prompts = server.get_prompt_definitions()
-    assert len(prompts) == 6, f"Expected 6 prompts, got {len(prompts)}"
+    assert len(prompts) == 8, f"Expected 8 prompts, got {len(prompts)}"
     p_orch = server.get_prompt("mcp_prompt_orchestrator", {"issue_description": "Test", "target_file": "app.py"})
     assert "Lead Orchestrator" in p_orch["messages"][0]["content"]["text"]
     p_soc = server.get_prompt("mcp_prompt_soc_incident_responder", {"incident_description": "Malware Outbreak", "artifact_path": "sample.exe"})
     assert "SOC Incident Responder" in p_soc["messages"][0]["content"]["text"]
+    p_pony_rev = server.get_prompt("mcp_prompt_ponytail_review", {"target_file": "app.py"})
+    assert "Lazy Senior Dev" in p_pony_rev["messages"][0]["content"]["text"]
+    p_pony_min = server.get_prompt("mcp_prompt_ponytail_minimalist", {"task_description": "fix bug", "target_file": "app.py"})
+    assert "Ponytail Minimalist" in p_pony_min["messages"][0]["content"]["text"]
     print(f"[PASS] Prompts verified: {len(prompts)} registered and formatted.")
 
     # 4. Test JSON-RPC initialize
@@ -1694,7 +2190,37 @@ def run_self_test() -> bool:
     assert Path(quar_data["quarantine_path"]).exists()
     print("[PASS] Artifact Quarantine tool verified: Sample atomically moved into vault and encrypted.")
 
-    # 13. Run full discovered test suite in tests/
+    # 13. Test Ponytail Review & Debt tools via JSON-RPC
+    pony_req = {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": {
+            "name": "mcp_ponytail_review",
+            "arguments": {"code": "import requests\nclass StringUtils:\n    @staticmethod\n    def do_stuff(x):\n        return x.strip()\n"},
+        },
+    }
+    pony_res = server.handle_request(pony_req)
+    pony_data = json.loads(pony_res["result"]["content"][0]["text"])
+    assert pony_data["success"] is True
+    assert pony_data["total_findings"] >= 1
+    print(f"[PASS] Ponytail Review tool verified: {pony_data['total_findings']} findings detected.")
+
+    pony_debt_req = {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "tools/call",
+        "params": {
+            "name": "mcp_ponytail_debt",
+            "arguments": {"path": "core"},
+        },
+    }
+    pony_debt_res = server.handle_request(pony_debt_req)
+    pony_debt_data = json.loads(pony_debt_res["result"]["content"][0]["text"])
+    assert pony_debt_data["success"] is True
+    print("[PASS] Ponytail Debt tool verified.")
+
+    # 14. Run full discovered test suite in tests/
     print("\n--- Running Full Discovered Test Suite (tests/) ---")
     import unittest
     suite = unittest.defaultTestLoader.discover("tests", pattern="test_*.py")

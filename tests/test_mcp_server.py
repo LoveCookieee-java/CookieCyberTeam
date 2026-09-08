@@ -24,12 +24,12 @@ class TestMCPServer(unittest.TestCase):
         self.assertEqual(res["protocolVersion"], "2024-11-05")
         self.assertEqual(res["serverInfo"]["name"], "cookie-cyber-team")
 
-    def test_tools_list_all_sixteen(self):
-        """Verify all 16 core tools are registered."""
+    def test_tools_list_all_nineteen(self):
+        """Verify all 19 core tools are registered."""
         req = {"jsonrpc": "2.0", "id": 102, "method": "tools/list", "params": {}}
         resp = self.server.handle_request(req)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 16)
+        self.assertEqual(len(tools), 19)
         tool_names = {t["name"] for t in tools}
         expected = {
             "mcp_adaptive_guide",
@@ -48,19 +48,23 @@ class TestMCPServer(unittest.TestCase):
             "mcp_restore_quarantined_file",
             "mcp_generate_containment_rule",
             "mcp_terminate_process",
+            "mcp_ponytail_review",
+            "mcp_ponytail_audit",
+            "mcp_ponytail_debt",
         }
         self.assertEqual(tool_names, expected)
 
-    def test_resources_list_and_read_all_eight(self):
-        """Verify all 8 resources are registered and readable."""
+    def test_resources_list_and_read_all_nine(self):
+        """Verify all 9 resources are registered and readable."""
         req = {"jsonrpc": "2.0", "id": 103, "method": "resources/list", "params": {}}
         resp = self.server.handle_request(req)
         resources = resp["result"]["resources"]
-        self.assertEqual(len(resources), 8)
+        self.assertEqual(len(resources), 9)
         uris = {r["uri"] for r in resources}
         expected_uris = {
             "mcp://rules/security-standards",
             "mcp://rules/debugging-mindset",
+            "mcp://rules/ponytail-ladder",
             "mcp://state/agent-context",
             "mcp://state/tool-index",
             "mcp://playbooks/malware-triage",
@@ -82,12 +86,12 @@ class TestMCPServer(unittest.TestCase):
             content = read_resp["result"]["contents"][0]["text"]
             self.assertGreater(len(content), 20)
 
-    def test_prompts_list_and_get_all_six(self):
-        """Verify prompt templates generation for all 6 agent personas."""
+    def test_prompts_list_and_get_all_eight(self):
+        """Verify prompt templates generation for all 8 agent personas."""
         req = {"jsonrpc": "2.0", "id": 105, "method": "prompts/list", "params": {}}
         resp = self.server.handle_request(req)
         prompts = resp["result"]["prompts"]
-        self.assertEqual(len(prompts), 6)
+        self.assertEqual(len(prompts), 8)
 
         expected_prompts = [
             "mcp_prompt_orchestrator",
@@ -96,6 +100,8 @@ class TestMCPServer(unittest.TestCase):
             "mcp_prompt_safe_patch",
             "mcp_prompt_qa_review",
             "mcp_prompt_soc_incident_responder",
+            "mcp_prompt_ponytail_review",
+            "mcp_prompt_ponytail_minimalist",
         ]
 
         for p_name in expected_prompts:

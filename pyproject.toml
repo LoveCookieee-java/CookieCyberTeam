@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cookie-cyber-team"
-version = "1.0.1"
+version = "1.0.2"
 description = "Single Unified Intelligent MCP Server & 5-Gate Defensive Cyber Guardrails for AI Coding Agents"
 readme = "README.md"
 license = { text = "MIT" }
