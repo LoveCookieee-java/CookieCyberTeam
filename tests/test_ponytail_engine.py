@@ -567,6 +567,53 @@ class TestProjectGenomeProfilerPonytail(unittest.TestCase):
         finally:
             server.close()
 
+    def test_ponytail_audit_case_insensitive_exclusion_and_max_files(self):
+        """Verify case-insensitive exclusion and max_files safeguard in audit."""
+        server = CookieCyberMCPServer(db_path=":memory:")
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                vendor = root / "Vendor"
+                vendor.mkdir()
+                (vendor / "bad.py").write_text("import requests\n", encoding="utf-8")
+                (root / "good1.py").write_text("x = 1\n", encoding="utf-8")
+                (root / "good2.py").write_text("y = 2\n", encoding="utf-8")
+
+                res = server.tool_ponytail_audit({"path": tmp_dir, "max_files": 1})
+                self.assertTrue(res["success"])
+                self.assertLessEqual(res["files_audited"], 1)
+                # Ensure Vendor directory was completely skipped
+                audited = res["ranked_files"]
+                self.assertFalse(any("vendor" in item["file"].lower() for item in audited))
+        finally:
+            server.close()
+
+    def test_ponytail_debt_case_insensitive_exclusion(self):
+        """Verify case-insensitive folder exclusion in debt scanner."""
+        server = CookieCyberMCPServer(db_path=":memory:")
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                nm = root / "Node_Modules"
+                nm.mkdir()
+                (nm / "ignored.js").write_text("// ponytail: in node_modules\n", encoding="utf-8")
+                (root / "kept.py").write_text("# ponytail: in root\n", encoding="utf-8")
+
+                res = server.tool_ponytail_debt({"path": tmp_dir, "max_files": 10})
+                self.assertTrue(res["success"])
+                self.assertEqual(res["total_debt_items"], 1)
+                self.assertEqual(res["debt_items"][0]["description"], "in root")
+        finally:
+            server.close()
+
+    def test_committer_token_capacity_bounded_growth(self):
+        """Verify SafePatchManager caps active committer tokens at 500 to prevent memory leaks."""
+        manager = SafePatchManager(enforce_token=True)
+        for _ in range(505):
+            manager.generate_committer_token("Lead Orchestrator")
+        self.assertLessEqual(len(manager._committer_tokens), 500)
+        self.assertEqual(manager._tokens_issued, 505)
+
 
 if __name__ == "__main__":
     unittest.main()

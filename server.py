@@ -661,10 +661,15 @@ class CookieCyberMCPServer:
             npm_findings = audit_npm_dependencies(pkg_json_path.read_text(encoding="utf-8", errors="ignore"))
             dep_savings.extend(npm_findings)
 
+        excluded_dirs_lower = {str(d).lower() for d in excluded_dirs}
+        max_files = max(1, int(args.get("max_files", 1000)))
+
         # Walk workspace files
         for root, dirs, files in os.walk(target_dir):
-            dirs[:] = [d for d in dirs if d not in excluded_dirs and not d.startswith(".")]
+            dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs_lower and not d.startswith(".")]
             for f in files:
+                if len(audited_files) >= max_files:
+                    break
                 ext = os.path.splitext(f)[1].lower()
                 if ext in (".py", ".js", ".ts"):
                     f_path = Path(root) / f
@@ -681,6 +686,8 @@ class CookieCyberMCPServer:
                                 file_savings[rel_path] = savings
                     except Exception:
                         pass
+            if len(audited_files) >= max_files:
+                break
 
         # Sort files by LOC savings descending
         ranked_files = sorted(
@@ -709,17 +716,23 @@ class CookieCyberMCPServer:
             target_dir = target_dir.parent
 
         excluded_dirs = getattr(self.config, "exclude_dirs", {"vendor", "node_modules", ".git", "dist", "build", "__pycache__", ".quarantine"})
+        excluded_dirs_lower = {str(d).lower() for d in excluded_dirs}
         debt_re = re.compile(r"""(?:#|//|/\*|\*)\s*ponytail:\s*(.*?)(?:\*/|\n|$)""", re.IGNORECASE)
+        max_files = max(1, int(args.get("max_files", 2000)))
 
         debt_items: List[Dict[str, Any]] = []
         tag_counts: Dict[str, int] = {}
+        files_scanned = 0
 
         for root, dirs, files in os.walk(target_dir):
-            dirs[:] = [d for d in dirs if d not in excluded_dirs and not d.startswith(".")]
+            dirs[:] = [d for d in dirs if d.lower() not in excluded_dirs_lower and not d.startswith(".")]
             for f in files:
+                if files_scanned >= max_files:
+                    break
                 ext = os.path.splitext(f)[1].lower()
                 if ext in (".py", ".js", ".ts", ".go", ".java", ".rs", ".md", ".toml", ".yaml", ".yml", ".c", ".cpp", ".h"):
                     f_path = Path(root) / f
+                    files_scanned += 1
                     try:
                         lines = f_path.read_text(encoding="utf-8", errors="ignore").splitlines()
                         for idx, line in enumerate(lines, start=1):
@@ -744,6 +757,8 @@ class CookieCyberMCPServer:
                                 })
                     except Exception:
                         pass
+            if files_scanned >= max_files:
+                break
 
         return {
             "success": True,

@@ -1118,6 +1118,10 @@ class SafePatchManager:
                 ),
                 details={"role": role, "required_role": "Lead Orchestrator"},
             )
+        MAX_ACTIVE_TOKENS = 500
+        if len(self._committer_tokens) >= MAX_ACTIVE_TOKENS:
+            # Evict an arbitrary active token to enforce bounded memory in long sessions
+            self._committer_tokens.pop()
         token = f"lead-token-{secrets.token_hex(16)}"
         self._committer_tokens.add(token)
         self._tokens_issued += 1

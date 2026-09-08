@@ -168,19 +168,26 @@ def cmd_ponytail(args: argparse.Namespace) -> int:
 
     from server import CookieCyberMCPServer
     server = CookieCyberMCPServer()
-    if subaction == "audit":
-        res = server.tool_ponytail_audit({"path": getattr(args, "path", "."), "mode": getattr(args, "mode", "full")})
-        print(json.dumps(res, indent=2))
-        return 0 if res.get("success") else 1
-    elif subaction == "review":
-        res = server.tool_ponytail_review({"file_path": getattr(args, "file", None), "mode": getattr(args, "mode", "full")})
-        print(json.dumps(res, indent=2))
-        return 0 if res.get("success") else 1
-    elif subaction == "debt":
-        res = server.tool_ponytail_debt({"path": getattr(args, "path", ".")})
-        print(json.dumps(res, indent=2))
-        return 0 if res.get("success") else 1
-    return 0
+    try:
+        if subaction == "audit":
+            res = server.tool_ponytail_audit({"path": getattr(args, "path", "."), "mode": getattr(args, "mode", "full")})
+            print(json.dumps(res, indent=2))
+            return 0 if res.get("success") else 1
+        elif subaction == "review":
+            res = server.tool_ponytail_review({"file_path": getattr(args, "file", None), "mode": getattr(args, "mode", "full")})
+            print(json.dumps(res, indent=2))
+            return 0 if res.get("success") else 1
+        elif subaction == "debt":
+            res = server.tool_ponytail_debt({"path": getattr(args, "path", ".")})
+            print(json.dumps(res, indent=2))
+            return 0 if res.get("success") else 1
+        return 0
+    finally:
+        if hasattr(server, "code_searcher") and server.code_searcher:
+            try:
+                server.code_searcher.close()
+            except Exception:
+                pass
 
 
 def build_parser() -> argparse.ArgumentParser:
