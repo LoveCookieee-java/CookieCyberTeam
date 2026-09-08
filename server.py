@@ -243,6 +243,26 @@ COMPROMISE_ASSESSMENT_PLAYBOOK_RESOURCE = """# Multi-Agent Compromise Assessment
 """
 
 
+def _safe_int(val: Any, default: int) -> int:
+    """Safely convert value to int with fallback default on None or conversion error."""
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float(val: Any, default: float) -> float:
+    """Safely convert value to float with fallback default on None or conversion error."""
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 # ---------------------------------------------------------------------------
 # MCP Server Implementation
 # ---------------------------------------------------------------------------
@@ -328,13 +348,15 @@ class CookieCyberMCPServer:
 
     def tool_restore_quarantined_file(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Restore quarantined artifact from encrypted vault back to workspace."""
-        quarantine_path = args.get("quarantine_path")
-        if not quarantine_path:
-            return {"success": False, "error": "quarantine_path is required."}
-        dest = args.get("original_destination")
+        quarantine_target = args.get("quarantine_path") or args.get("quarantine_id")
+        if not quarantine_target:
+            return {"success": False, "error": "quarantine_path or quarantine_id is required."}
+        dest = args.get("original_destination") or args.get("destination_path")
+        quarantine_dir = args.get("quarantine_dir")
         return restore_quarantined_file(
-            quarantine_path=quarantine_path,
-            original_destination=dest,
+            quarantine_id=quarantine_target,
+            quarantine_dir=quarantine_dir,
+            destination_path=dest,
             workspace_root=self.workspace_root,
         )
 
@@ -345,9 +367,9 @@ class CookieCyberMCPServer:
             return {"success": False, "error": "pid is required."}
         try:
             pid = int(pid)
-        except ValueError:
+        except (ValueError, TypeError):
             return {"success": False, "error": f"Invalid PID: {pid}"}
-        timeout = float(args.get("timeout", 3.0))
+        timeout = _safe_float(args.get("timeout"), 3.0)
         return terminate_suspicious_process(pid=pid, timeout=timeout)
 
     def tool_scan_vulnerabilities(self, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -734,7 +756,7 @@ class CookieCyberMCPServer:
     def tool_execute_sandbox_test(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Run tests under isolated sandbox environment."""
         test_path = args.get("test_path")
-        timeout = int(args.get("timeout", 30))
+        timeout = _safe_int(args.get("timeout"), 30)
         sandbox_type = args.get("sandbox_type", "subprocess")
 
         if not test_path:
@@ -869,7 +891,7 @@ class CookieCyberMCPServer:
 
     def tool_orchestrate_dag(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Coordinate multi-agent workflow DAG and point-to-point mailbox through SQLite WAL."""
-        action = args.get("action", "get_summary")
+        action = str(args.get("action") or "get_summary").strip().lower()
 
         if action == "init_pipeline":
             requester = args.get("agent_id", args.get("assigned_to", "Lead Orchestrator"))
@@ -1001,7 +1023,7 @@ class CookieCyberMCPServer:
         """Search code using Syntactic AST Chunking and SQLite FTS5 BM25."""
         query = args.get("query")
         target_path = args.get("target_path", ".")
-        top_k = int(args.get("top_k", 5))
+        top_k = _safe_int(args.get("top_k"), 5)
         extensions = args.get("extensions")
         ext_tuple = tuple(extensions) if extensions else None
 
@@ -1031,7 +1053,7 @@ class CookieCyberMCPServer:
         tool_name = args.get("tool_name", "")
         target_file = args.get("target_file", "")
         tool_args = args.get("args")
-        timeout = int(args.get("timeout", 30))
+        timeout = _safe_int(args.get("timeout"), 30)
         return self.tool_indexer.run_diagnostic_tool(
             tool_name=tool_name,
             target_file=target_file,
@@ -1052,7 +1074,7 @@ class CookieCyberMCPServer:
         if not file_path:
             return {"success": False, "error": "file_path parameter is required when not checking status with task_id."}
 
-        timeout = int(args.get("timeout", 120))
+        timeout = _safe_int(args.get("timeout"), 120)
         tags = args.get("tags")
         async_mode = bool(args.get("async_mode", False))
         poll_completion = not async_mode
@@ -1083,6 +1105,8 @@ class CookieCyberMCPServer:
             return {"success": False, "error": "target parameter is required."}
         rule_type = args.get("rule_type", "block")
         port = args.get("port")
+        if port is not None:
+            port = _safe_int(port, port)
         return generate_firewall_rule(target=target, rule_type=rule_type, port=port)
 
     # -----------------------------------------------------------------------
@@ -1960,6 +1984,12 @@ class CookieCyberMCPServer:
             self.code_searcher.close()
         if hasattr(self, "dag_engine"):
             self.dag_engine.close()
+
+    def __enter__(self) -> "CookieCyberMCPServer":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
 
 def run_self_test() -> bool:

@@ -895,6 +895,40 @@ class TestASTScanner(unittest.TestCase):
         self.assertGreaterEqual(len(sarif["runs"][0]["tool"]["driver"]["rules"]), 2)
         self.assertGreaterEqual(len(sarif["runs"][0]["results"]), 2)
 
+    def test_cwe798_attribute_assignment_flagged(self):
+        """Verify attribute assignment self.api_key = '...' is flagged as CWE-798."""
+        code = (
+            "class Client:\n"
+            "    def __init__(self):\n"
+            "        self.api_key = 'sk-aB3dE5gH7iJ9kL1mN3oP5qR7sT9uV1wX'\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe798 = [f for f in findings if f.cwe_id == "CWE-798"]
+        self.assertEqual(len(cwe798), 1)
+
+    def test_yaml_load_safe_loader_positional_not_flagged(self):
+        """Verify yaml.load(data, yaml.SafeLoader) is not flagged as CWE-502."""
+        code = (
+            "import yaml\n"
+            "def parse_config(data):\n"
+            "    return yaml.load(data, yaml.SafeLoader)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe502 = [f for f in findings if f.cwe_id == "CWE-502"]
+        self.assertEqual(len(cwe502), 0)
+
+    def test_cwe22_pathlib_write_text_and_write_bytes(self):
+        """Verify pathlib write_text and write_bytes with untrusted path is flagged as CWE-22."""
+        code = (
+            "from pathlib import Path\n"
+            "def save_file(user_filename, data):\n"
+            "    target = Path('/uploads') / user_filename\n"
+            "    target.write_text(data)\n"
+        )
+        findings = self.scanner.scan_code(code)
+        cwe22 = [f for f in findings if f.cwe_id == "CWE-22"]
+        self.assertGreaterEqual(len(cwe22), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

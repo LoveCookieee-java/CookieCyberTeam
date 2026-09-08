@@ -85,6 +85,7 @@ def terminate_process_tree(proc: subprocess.Popen) -> None:
                 stderr=subprocess.DEVNULL,
                 check=False,
                 shell=False,
+                timeout=5,
             )
         else:
             try:
@@ -98,6 +99,7 @@ def terminate_process_tree(proc: subprocess.Popen) -> None:
                         capture_output=True,
                         text=True,
                         shell=False,
+                        timeout=5,
                     )
                     if res.returncode == 0:
                         for p in res.stdout.split():
@@ -175,8 +177,26 @@ class SandboxRunner:
             stderr_text += f"\n[Sandbox Timeout]: Execution exceeded {timeout_sec}s and was terminated."
             exit_code = 124  # Standard timeout exit code
         except Exception as exc:
+            if proc and proc.poll() is None:
+                terminate_process_tree(proc)
+                try:
+                    proc.communicate(timeout=2)
+                except Exception:
+                    pass
             stderr_text += f"\n[Sandbox Execution Error]: {str(exc)}"
             exit_code = 1
+        finally:
+            if proc:
+                if proc.stdout and not getattr(proc.stdout, "closed", True):
+                    try:
+                        proc.stdout.close()
+                    except Exception:
+                        pass
+                if proc.stderr and not getattr(proc.stderr, "closed", True):
+                    try:
+                        proc.stderr.close()
+                    except Exception:
+                        pass
 
         duration_ms = int((time.perf_counter() - start_time) * 1000)
 

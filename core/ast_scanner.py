@@ -415,8 +415,9 @@ class ASTScannerVisitor(ast.NodeVisitor):
                     self._check_assign_target_and_value(t, value, lineno)
             return
 
-        if isinstance(target, ast.Name):
-            var_name = target.id.lower()
+        if isinstance(target, (ast.Name, ast.Attribute)):
+            sym_name = target.id if isinstance(target, ast.Name) else target.attr
+            var_name = sym_name.lower()
             if value and isinstance(value, ast.Constant) and isinstance(value.value, str):
                 val_str = value.value
                 is_suspicious_var = any(kw in var_name for kw in self.SECRET_VAR_KEYWORDS)
@@ -433,7 +434,7 @@ class ASTScannerVisitor(ast.NodeVisitor):
                     self.findings.append(Finding(
                         cwe_id="CWE-798",
                         title="Use of Hard-coded Credentials",
-                        description=f"Variable '{target.id}' is assigned a high-entropy or sensitive secret literal.",
+                        description=f"Variable '{sym_name}' is assigned a high-entropy or sensitive secret literal.",
                         file_path=self.file_path,
                         line_number=lineno,
                         severity=cvss["severity"],
@@ -444,31 +445,31 @@ class ASTScannerVisitor(ast.NodeVisitor):
                     ))
 
             # Track local taint for SQL queries and path manipulations
-            if value and self._is_potential_sql_expr(value):
-                self._set_var_taint(target.id, "sql")
-            elif value and self._references_tainted_var(value, taint_type="sql"):
-                self._set_var_taint(target.id, "sql")
-            elif value and self._is_potential_path_expr(value):
-                self._set_var_taint(target.id, "path")
-            elif value and self._is_path_like_node(value):
-                self._set_var_taint(target.id, "path")
-            elif value and self._references_tainted_var(value, taint_type="path"):
-                self._set_var_taint(target.id, "path")
-            elif value and self._references_tainted_var(value):
-                self._set_var_taint(target.id, "generic")
-            else:
-                self._set_var_taint(target.id, None)
-
-        elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
-            attr_name = target.attr
-            if value and (self._is_potential_sql_expr(value) or self._references_tainted_var(value, taint_type="sql")):
-                self.instance_field_taint[attr_name] = "sql"
-            elif value and (self._is_potential_path_expr(value) or self._references_tainted_var(value, taint_type="path") or self._is_path_like_node(value)):
-                self.instance_field_taint[attr_name] = "path"
-            elif value and self._references_tainted_var(value):
-                self.instance_field_taint[attr_name] = "generic"
-            else:
-                self.instance_field_taint.pop(attr_name, None)
+            if isinstance(target, ast.Name):
+                if value and self._is_potential_sql_expr(value):
+                    self._set_var_taint(target.id, "sql")
+                elif value and self._references_tainted_var(value, taint_type="sql"):
+                    self._set_var_taint(target.id, "sql")
+                elif value and self._is_potential_path_expr(value):
+                    self._set_var_taint(target.id, "path")
+                elif value and self._is_path_like_node(value):
+                    self._set_var_taint(target.id, "path")
+                elif value and self._references_tainted_var(value, taint_type="path"):
+                    self._set_var_taint(target.id, "path")
+                elif value and self._references_tainted_var(value):
+                    self._set_var_taint(target.id, "generic")
+                else:
+                    self._set_var_taint(target.id, None)
+            elif isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+                attr_name = target.attr
+                if value and (self._is_potential_sql_expr(value) or self._references_tainted_var(value, taint_type="sql")):
+                    self.instance_field_taint[attr_name] = "sql"
+                elif value and (self._is_potential_path_expr(value) or self._references_tainted_var(value, taint_type="path") or self._is_path_like_node(value)):
+                    self.instance_field_taint[attr_name] = "path"
+                elif value and self._references_tainted_var(value):
+                    self.instance_field_taint[attr_name] = "generic"
+                else:
+                    self.instance_field_taint.pop(attr_name, None)
 
     def _references_tainted_var(self, node: ast.AST, taint_type: Optional[str] = None) -> bool:
         """Check if an AST expression references any currently tainted variable, self.attr, or return of tainted call."""
@@ -751,6 +752,12 @@ class ASTScannerVisitor(ast.NodeVisitor):
                 kw.arg == "Loader" and "Safe" in ast.unparse(kw.value)
                 for kw in node.keywords
             )
+            if not has_safe_loader and len(node.args) >= 2:
+                try:
+                    if "Safe" in ast.unparse(node.args[1]):
+                        has_safe_loader = True
+                except Exception:
+                    pass
             if not has_safe_loader:
                 cvss = cvss_for_cwe("CWE-502")
                 self.findings.append(Finding(
@@ -938,10 +945,10 @@ class ASTScannerVisitor(ast.NodeVisitor):
                         remediation="Validate paths using os.path.realpath() and os.path.commonpath() against an allowed base directory.",
                     ))
 
-        # Pathlib file reads: Path(...).read_text(), read_bytes(), Path.open()
+        # Pathlib file operations: Path(...).read_text(), read_bytes(), write_text(), write_bytes(), Path.open()
         if (
             isinstance(node.func, ast.Attribute)
-            and node.func.attr in ("read_text", "read_bytes", "open")
+            and node.func.attr in ("read_text", "read_bytes", "write_text", "write_bytes", "open")
             and func_name not in ("open", "io.open", "os.open", "shelve.open", "tarfile.open")
         ):
             target_obj = node.func.value
@@ -955,10 +962,11 @@ class ASTScannerVisitor(ast.NodeVisitor):
 
             if is_pathlib_traversal:
                 cvss = cvss_for_cwe("CWE-22")
+                op_type = "write" if "write" in node.func.attr else "read"
                 self.findings.append(Finding(
                     cwe_id="CWE-22",
                     title="Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')",
-                    description=f"Pathlib file read operation '{node.func.attr}' called on dynamic or untrusted path expression.",
+                    description=f"Pathlib file {op_type} operation '{node.func.attr}' called on dynamic or untrusted path expression.",
                     file_path=self.file_path,
                     line_number=node.lineno,
                     severity=cvss["severity"],
@@ -1395,7 +1403,7 @@ class ASTScanner:
         # Check if file is tracked by git
         ls_argv = ["git", "ls-files", "--error-unmatch", "--", rel_posix]
         try:
-            ls_res = subprocess.run(ls_argv, cwd=str(repo), capture_output=True, text=True, shell=False)
+            ls_res = subprocess.run(ls_argv, cwd=str(repo), capture_output=True, text=True, shell=False, timeout=10)
             if ls_res.returncode != 0:
                 # Untracked / newly created file: scan 100% of lines
                 return self.scan_file(target, modified_lines=None)
@@ -1405,7 +1413,7 @@ class ASTScanner:
         # Extract modified line numbers using git diff
         argv = ["git", "diff", "-U0", base_commit, "--", rel_posix]
         try:
-            res = subprocess.run(argv, cwd=str(repo), capture_output=True, text=True, shell=False)
+            res = subprocess.run(argv, cwd=str(repo), capture_output=True, text=True, shell=False, timeout=10)
             if res.returncode != 0:
                 modified_lines = None
             else:

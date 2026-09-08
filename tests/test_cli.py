@@ -125,6 +125,34 @@ class TestCLI(unittest.TestCase):
             self.assertTrue(res["success"])
             self.assertEqual(res["total_findings"], 0)
 
+    def test_cli_restore_command(self):
+        """Verify CLI restore subcommand restores quarantined file from vault."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            sample = Path(tmp_dir) / "trojan_cli.bin"
+            sample.write_bytes(b"CLI_QUARANTINE_RESTORE_TEST")
+            vault = Path(tmp_dir) / ".quarantine_vault"
+
+            # Quarantine first
+            buf_q = io.StringIO()
+            with redirect_stdout(buf_q):
+                code_q = main(["quarantine", "--file", str(sample), "--quarantine-dir", str(vault)])
+            self.assertEqual(code_q, 0)
+            res_q = json.loads(buf_q.getvalue())
+            self.assertTrue(res_q["success"])
+            quar_id = res_q["quarantine_id"]
+            self.assertFalse(sample.exists())
+
+            # Restore via CLI
+            rest_dest = Path(tmp_dir) / "restored_cli.bin"
+            buf_r = io.StringIO()
+            with redirect_stdout(buf_r):
+                code_r = main(["restore", quar_id, "--destination", str(rest_dest), "--quarantine-dir", str(vault)])
+            self.assertEqual(code_r, 0)
+            res_r = json.loads(buf_r.getvalue())
+            self.assertTrue(res_r["success"])
+            self.assertTrue(rest_dest.exists())
+            self.assertEqual(rest_dest.read_bytes(), b"CLI_QUARANTINE_RESTORE_TEST")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -179,11 +179,17 @@ def quarantine_file(
 
 
 def restore_quarantined_file(
-    quarantine_id: str,
+    quarantine_id: Optional[str] = None,
     quarantine_dir: Optional[Union[str, Path]] = None,
     destination_path: Optional[Union[str, Path]] = None,
     workspace_root: Optional[Union[str, Path]] = None,
+    **kwargs: Any,
 ) -> Dict[str, Any]:
+    effective_id = quarantine_id or kwargs.get("quarantine_path")
+    if not effective_id:
+        return {"success": False, "error": "quarantine_id or quarantine_path is required."}
+    effective_dest = destination_path or kwargs.get("original_destination")
+
     if quarantine_dir:
         vault = Path(quarantine_dir).resolve()
         ws = Path(workspace_root).resolve() if workspace_root else (find_git_root(vault) or vault.parent)
@@ -197,10 +203,23 @@ def restore_quarantined_file(
 
     manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
     items = manifest_data.get("items", {})
-    if quarantine_id not in items:
-        return {"success": False, "error": f"Quarantine ID '{quarantine_id}' not found in manifest."}
+    target_id = effective_id
+    if target_id not in items:
+        # Resolve by filename or full path lookup across manifest items
+        found_key = None
+        target_name = Path(target_id).name
+        target_resolved = str(Path(target_id).resolve())
+        for k, v in items.items():
+            item_path = v.get("quarantine_path", "")
+            if item_path == target_id or Path(item_path).name == target_name or str(Path(item_path).resolve()) == target_resolved:
+                found_key = k
+                break
+        if found_key:
+            target_id = found_key
+        else:
+            return {"success": False, "error": f"Quarantine ID or path '{effective_id}' not found in manifest."}
 
-    item = items[quarantine_id]
+    item = items[target_id]
     enc_path = Path(item["quarantine_path"])
     if not enc_path.is_file():
         vault_candidate = vault / enc_path.name
@@ -210,7 +229,7 @@ def restore_quarantined_file(
             return {"success": False, "error": f"Encrypted file not found on disk: {enc_path}"}
 
     # Restore target path
-    target = Path(destination_path).resolve() if destination_path else Path(item["original_path"]).resolve()
+    target = Path(effective_dest).resolve() if effective_dest else Path(item["original_path"]).resolve()
     if not _is_safe_target(target, ws, allow_vault=False):
         return {
             "success": False,
@@ -242,13 +261,13 @@ def restore_quarantined_file(
     item["status"] = "restored"
     item["restored_to"] = str(target)
     manifest_data["last_updated"] = datetime.now(timezone.utc).isoformat()
-    tmp_manifest = vault / f".tmp_restore_{quarantine_id}.json"
+    tmp_manifest = vault / f".tmp_restore_{target_id}.json"
     tmp_manifest.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
     os.replace(tmp_manifest, manifest_path)
 
     return {
         "success": True,
-        "quarantine_id": quarantine_id,
+        "quarantine_id": target_id,
         "restored_path": str(target),
         "sha256": hashlib.sha256(restored_bytes).hexdigest(),
     }
@@ -280,7 +299,7 @@ def generate_firewall_rule(
             port = int(port)
             if not (1 <= port <= 65535):
                 return {"success": False, "error": f"Port number out of valid range (1-65535): {port}"}
-        except ValueError:
+        except (ValueError, TypeError):
             return {"success": False, "error": f"Invalid port parameter: {port}"}
 
     clean_target = re.sub(r"[^\w.]", "_", target)
@@ -336,7 +355,7 @@ def generate_firewall_rule(
     }
 
 
-def terminate_suspicious_process(pid: int, force: bool = True) -> Dict[str, Any]:
+def terminate_suspicious_process(pid: int, force: bool = True, timeout: float = 3.0) -> Dict[str, Any]:
     """
     Safely terminates suspicious process and its entire process tree.
     Rejects system critical PIDs (0, 4, current agent PID, parent PID) to prevent accidental crashes.
@@ -378,7 +397,7 @@ def terminate_suspicious_process(pid: int, force: bool = True) -> Dict[str, Any]
             argv.insert(1, "/F")
 
         try:
-            proc = subprocess.run(argv, capture_output=True, text=True, shell=False)
+            proc = subprocess.run(argv, capture_output=True, text=True, shell=False, timeout=timeout)
             if proc.returncode == 0:
                 return {
                     "success": True,
@@ -444,6 +463,7 @@ def terminate_suspicious_process(pid: int, force: bool = True) -> Dict[str, Any]
                     capture_output=True,
                     text=True,
                     shell=False,
+                    timeout=5,
                 )
                 if pgrep_res.returncode == 0:
                     for p in pgrep_res.stdout.split():
@@ -466,7 +486,7 @@ def terminate_suspicious_process(pid: int, force: bool = True) -> Dict[str, Any]
                 pass
 
         # Allow brief interval for graceful exit
-        time.sleep(0.1)
+        time.sleep(min(max(timeout, 0.05), 0.5))
 
         # Identify any still-running processes
         still_alive: List[int] = []

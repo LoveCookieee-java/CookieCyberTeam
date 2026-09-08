@@ -364,8 +364,11 @@ class FTS5BM25Searcher:
             "SELECT mtime FROM file_index_meta WHERE file_path = ?",
             (file_path,),
         )
-        row = cursor.fetchone()
-        return float(row["mtime"]) if row else None
+        try:
+            row = cursor.fetchone()
+            return float(row["mtime"]) if row else None
+        finally:
+            cursor.close()
 
     def delete_file_chunks(self, file_path: str) -> None:
         """Delete old indexed chunks and metadata for a file."""
@@ -438,19 +441,22 @@ class FTS5BM25Searcher:
                 (f"%{raw_target}%", top_k),
             )
             results: List[Dict[str, Any]] = []
-            for r in cursor.fetchall():
-                results.append({
-                    "chunk_id": r["chunk_id"],
-                    "file_path": r["file_path"],
-                    "name": r["name"],
-                    "chunk_type": r["chunk_type"],
-                    "content": r["content"],
-                    "docstring": r["docstring"],
-                    "start_line": r["start_line"],
-                    "end_line": r["end_line"],
-                    "token_count": r["token_count"],
-                    "score": 1.0,
-                })
+            try:
+                for r in cursor.fetchall():
+                    results.append({
+                        "chunk_id": r["chunk_id"],
+                        "file_path": r["file_path"],
+                        "name": r["name"],
+                        "chunk_type": r["chunk_type"],
+                        "content": r["content"],
+                        "docstring": r["docstring"],
+                        "start_line": r["start_line"],
+                        "end_line": r["end_line"],
+                        "token_count": r["token_count"],
+                        "score": 1.0,
+                    })
+            finally:
+                cursor.close()
             return results
 
         results: List[Dict[str, Any]] = []
@@ -478,19 +484,22 @@ class FTS5BM25Searcher:
                     """,
                     (fts_query, top_k),
                 )
-                for r in cursor.fetchall():
-                    results.append({
-                        "chunk_id": r["chunk_id"],
-                        "file_path": r["file_path"],
-                        "name": r["name"],
-                        "chunk_type": r["chunk_type"],
-                        "content": r["content"],
-                        "docstring": r["docstring"],
-                        "start_line": r["start_line"],
-                        "end_line": r["end_line"],
-                        "token_count": r["token_count"],
-                        "score": -float(r["score"]),  # Invert BM25 for standard higher=better
-                    })
+                try:
+                    for r in cursor.fetchall():
+                        results.append({
+                            "chunk_id": r["chunk_id"],
+                            "file_path": r["file_path"],
+                            "name": r["name"],
+                            "chunk_type": r["chunk_type"],
+                            "content": r["content"],
+                            "docstring": r["docstring"],
+                            "start_line": r["start_line"],
+                            "end_line": r["end_line"],
+                            "token_count": r["token_count"],
+                            "score": -float(r["score"]),  # Invert BM25 for standard higher=better
+                        })
+                finally:
+                    cursor.close()
                 return results
             except sqlite3.OperationalError:
                 pass
@@ -501,20 +510,23 @@ class FTS5BM25Searcher:
             "SELECT chunk_id, file_path, name, chunk_type, content, docstring, start_line, end_line, token_count FROM code_chunks_fts"
         )
         scored: List[Tuple[float, sqlite3.Row]] = []
-        for r in cursor.fetchall():
-            score = 0.0
-            name_low = r["name"].lower()
-            content_low = r["content"].lower()
-            doc_low = (r["docstring"] or "").lower()
-            for t in terms:
-                if t in name_low:
-                    score += 5.0
-                if t in doc_low:
-                    score += 2.0
-                if t in content_low:
-                    score += 1.0
-            if score > 0:
-                scored.append((score, r))
+        try:
+            for r in cursor.fetchall():
+                score = 0.0
+                name_low = r["name"].lower()
+                content_low = r["content"].lower()
+                doc_low = (r["docstring"] or "").lower()
+                for t in terms:
+                    if t in name_low:
+                        score += 5.0
+                    if t in doc_low:
+                        score += 2.0
+                    if t in content_low:
+                        score += 1.0
+                if score > 0:
+                    scored.append((score, r))
+        finally:
+            cursor.close()
 
         scored.sort(key=lambda x: x[0], reverse=True)
         for score, r in scored[:top_k]:
@@ -537,6 +549,12 @@ class FTS5BM25Searcher:
             self.conn.close()
         except Exception:
             pass
+
+    def __enter__(self) -> "FTS5BM25Searcher":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
 
 class SembleAdapter:
@@ -729,3 +747,9 @@ class HybridCodeSearch:
     def close(self) -> None:
         """Close database connection."""
         self.searcher.close()
+
+    def __enter__(self) -> "HybridCodeSearch":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()

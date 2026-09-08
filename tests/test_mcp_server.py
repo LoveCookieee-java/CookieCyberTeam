@@ -898,6 +898,105 @@ class TestMCPServer(unittest.TestCase):
             self.assertTrue(payload["success"])
             self.assertEqual(payload["total_findings"], 0)
 
+    def test_terminate_process_tool_jsonrpc(self):
+        """Verify mcp_terminate_process JSON-RPC dispatch and safety checks."""
+        # 1. Missing PID
+        req_missing = {
+            "jsonrpc": "2.0",
+            "id": 410,
+            "method": "tools/call",
+            "params": {"name": "mcp_terminate_process", "arguments": {}},
+        }
+        resp = self.server.handle_request(req_missing)
+        data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(data["success"])
+        self.assertIn("pid is required", data["error"])
+
+        # 2. Invalid PID
+        req_invalid = {
+            "jsonrpc": "2.0",
+            "id": 411,
+            "method": "tools/call",
+            "params": {"name": "mcp_terminate_process", "arguments": {"pid": "invalid_pid"}},
+        }
+        resp = self.server.handle_request(req_invalid)
+        data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(data["success"])
+        self.assertIn("Invalid PID", data["error"])
+
+        # 3. Critical System PID 0
+        req_pid0 = {
+            "jsonrpc": "2.0",
+            "id": 412,
+            "method": "tools/call",
+            "params": {"name": "mcp_terminate_process", "arguments": {"pid": 0, "timeout": 1.5}},
+        }
+        resp = self.server.handle_request(req_pid0)
+        data = json.loads(resp["result"]["content"][0]["text"])
+        self.assertFalse(data["success"])
+        self.assertIn("critical", data["error"].lower())
+
+    def test_restore_quarantined_file_tool_jsonrpc(self):
+        """Verify mcp_restore_quarantined_file JSON-RPC dispatch for ID and path lookups."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=tmp_dir)
+            sample = Path(tmp_dir) / "trojan.dll"
+            sample.write_bytes(b"DLL_CONTENT_HEX_TEST")
+
+            # Quarantine
+            q_req = {
+                "jsonrpc": "2.0",
+                "id": 420,
+                "method": "tools/call",
+                "params": {"name": "mcp_quarantine_artifact", "arguments": {"file_path": str(sample)}},
+            }
+            q_resp = server.handle_request(q_req)
+            q_data = json.loads(q_resp["result"]["content"][0]["text"])
+            self.assertTrue(q_data["success"])
+            quar_id = q_data["quarantine_id"]
+            quar_path = q_data["quarantine_path"]
+
+            # Restore using quarantine_id
+            rest_dest = Path(tmp_dir) / "restored.dll"
+            r_req = {
+                "jsonrpc": "2.0",
+                "id": 421,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_restore_quarantined_file",
+                    "arguments": {"quarantine_id": quar_id, "destination_path": str(rest_dest)},
+                },
+            }
+            r_resp = server.handle_request(r_req)
+            r_data = json.loads(r_resp["result"]["content"][0]["text"])
+            self.assertTrue(r_data["success"])
+            self.assertTrue(rest_dest.exists())
+            self.assertEqual(rest_dest.read_bytes(), b"DLL_CONTENT_HEX_TEST")
+
+            # Restore using quarantine_path alias
+            rest_dest2 = Path(tmp_dir) / "restored2.dll"
+            r_req2 = {
+                "jsonrpc": "2.0",
+                "id": 422,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_restore_quarantined_file",
+                    "arguments": {"quarantine_path": quar_path, "original_destination": str(rest_dest2)},
+                },
+            }
+            r_resp2 = server.handle_request(r_req2)
+            r_data2 = json.loads(r_resp2["result"]["content"][0]["text"])
+            self.assertTrue(r_data2["success"])
+            self.assertTrue(rest_dest2.exists())
+            self.assertEqual(rest_dest2.read_bytes(), b"DLL_CONTENT_HEX_TEST")
+
+    def test_mcp_server_context_manager(self):
+        """Verify CookieCyberMCPServer works cleanly with context manager protocol."""
+        with CookieCyberMCPServer(db_path=":memory:") as s:
+            self.assertTrue(hasattr(s, "handle_request"))
+            init_res = s.handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+            self.assertNotIn("error", init_res)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ Provides command-line interfaces for:
 - triage: Air-gapped binary triage and SOC rule evaluation.
 - contain: Multi-platform host firewall rule generation (Windows, Linux, DNS).
 - quarantine: Zero-execution artifact quarantine vault operations.
+- restore: Restore quarantined artifact from encrypted vault back to workspace.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from core.ast_scanner import ASTScanner
 from core.binary_triage import BinaryTriageEngine
 from core.config import CookieCyberConfig
-from core.containment import generate_firewall_rule, quarantine_file
+from core.containment import generate_firewall_rule, quarantine_file, restore_quarantined_file
 from core.soc_rules import SOCRuleEngine
 
 
@@ -143,6 +144,20 @@ def cmd_quarantine(args: argparse.Namespace) -> int:
     return 0 if res.get("success") else 1
 
 
+def cmd_restore(args: argparse.Namespace) -> int:
+    """Restore quarantined artifact from encrypted vault back to workspace."""
+    quar_target = getattr(args, "target", None)
+    quar_dir = getattr(args, "quarantine_dir", None)
+    dest = getattr(args, "destination", None)
+    res = restore_quarantined_file(
+        quarantine_id=quar_target,
+        quarantine_dir=quar_dir,
+        destination_path=dest,
+    )
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("success") else 1
+
+
 def cmd_ponytail(args: argparse.Namespace) -> int:
     """Execute Ponytail audit, review, debt scan, or print decision ladder."""
     subaction = getattr(args, "action", "audit")
@@ -198,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
     quar_parser.add_argument("--file", "-f", type=str, required=True, help="Path to suspicious file to quarantine")
     quar_parser.add_argument("--quarantine-dir", "-d", type=str, default=None, help="Optional custom quarantine directory")
 
+    # restore sub-command
+    restore_parser = subparsers.add_parser("restore", help="Restore quarantined file from vault back to workspace")
+    restore_parser.add_argument("target", type=str, help="Quarantine ID, original file path, or vaulted filename to restore")
+    restore_parser.add_argument("--destination", "-d", type=str, default=None, help="Optional custom destination path")
+    restore_parser.add_argument("--quarantine-dir", "-q", type=str, default=None, help="Optional custom quarantine directory")
+
     # ponytail sub-command
     pony_parser = subparsers.add_parser("ponytail", help="Ponytail Lazy Senior Dev auditor, code review, debt scanner, and decision ladder")
     pony_parser.add_argument("action", choices=["audit", "review", "debt", "ladder"], default="audit", nargs="?", help="Action to perform (default: audit)")
@@ -224,6 +245,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cmd_contain(args)
     elif args.command == "quarantine":
         return cmd_quarantine(args)
+    elif args.command == "restore":
+        return cmd_restore(args)
     elif args.command == "ponytail":
         return cmd_ponytail(args)
 

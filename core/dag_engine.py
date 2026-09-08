@@ -57,14 +57,21 @@ class DAGEngine:
     @contextlib.contextmanager
     def _connection(self) -> Generator[sqlite3.Connection, None, None]:
         if self.is_memory and self._mem_conn:
-            yield self._mem_conn
-            self._mem_conn.commit()
+            try:
+                yield self._mem_conn
+                self._mem_conn.commit()
+            except Exception:
+                self._mem_conn.rollback()
+                raise
         else:
             conn = sqlite3.connect(self.db_path_str, timeout=15.0)
             conn.row_factory = sqlite3.Row
             try:
                 yield conn
                 conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
             finally:
                 conn.close()
 
@@ -276,7 +283,9 @@ class DAGEngine:
                     (status, now, task_id),
                 )
             conn.commit()
-            if cursor.rowcount == 0:
+            updated_count = cursor.rowcount
+            cursor.close()
+            if updated_count == 0:
                 return False
 
         self.log_event("TASK_STATUS_UPDATED", "DAGEngine", f"Task '{task_id}' -> {status}")
@@ -600,3 +609,9 @@ class DAGEngine:
             except Exception:
                 pass
             self._mem_conn = None
+
+    def __enter__(self) -> "DAGEngine":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
