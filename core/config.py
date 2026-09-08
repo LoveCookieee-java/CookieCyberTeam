@@ -197,11 +197,37 @@ def _parse_toml_value(val_str: str) -> Any:
     return val_str
 
 
+def normalize_cap_limit(value: Any, default: int) -> Union[int, str]:
+    """
+    Normalize diff_cap_limit or new_file_cap_limit.
+    Accepts:
+    - Positive integers (e.g. 50, 100, 500)
+    - 0 or negative integers -> normalized to 'free' (unlimited diffs)
+    - Strings 'free', 'unlimited', 'none', 'inf', 'infinity' -> 'free' (unlimited)
+    - String representations of numbers (e.g. '100', '0') -> converted accordingly
+    """
+    if value is None:
+        return default
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in ("free", "unlimited", "none", "inf", "infinity"):
+            return "free"
+        try:
+            num = int(v)
+            return "free" if num <= 0 else num
+        except ValueError:
+            return default
+    if isinstance(value, (int, float)):
+        num = int(value)
+        return "free" if num <= 0 else num
+    return default
+
+
 @dataclass
 class CookieCyberConfig:
     """Repository configuration model with defaults and file persistence."""
-    diff_cap_limit: int = DEFAULT_DIFF_CAP_LIMIT
-    new_file_cap_limit: int = DEFAULT_NEW_FILE_CAP_LIMIT
+    diff_cap_limit: Union[int, str] = DEFAULT_DIFF_CAP_LIMIT
+    new_file_cap_limit: Union[int, str] = DEFAULT_NEW_FILE_CAP_LIMIT
     restricted_branches: Set[str] = field(default_factory=lambda: set(DEFAULT_RESTRICTED_BRANCHES))
     exclude_dirs: Set[str] = field(default_factory=lambda: set(DEFAULT_EXCLUDE_DIRS))
     shannon_entropy_threshold: float = DEFAULT_SHANNON_ENTROPY_THRESHOLD
@@ -210,8 +236,8 @@ class CookieCyberConfig:
 
     def __post_init__(self):
         # Normalize and validate types
-        self.diff_cap_limit = max(1, int(self.diff_cap_limit))
-        self.new_file_cap_limit = max(1, int(self.new_file_cap_limit))
+        self.diff_cap_limit = normalize_cap_limit(self.diff_cap_limit, DEFAULT_DIFF_CAP_LIMIT)
+        self.new_file_cap_limit = normalize_cap_limit(self.new_file_cap_limit, DEFAULT_NEW_FILE_CAP_LIMIT)
         self.shannon_entropy_threshold = max(0.0, min(8.0, float(self.shannon_entropy_threshold)))
         cvss_v = str(self.cvss_version).strip()
         self.cvss_version = cvss_v if cvss_v in ("3.0", "3.1", "4.0") else DEFAULT_CVSS_VERSION

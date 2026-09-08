@@ -315,8 +315,13 @@ CookieCyberTeam automatically discovers `.cookiecyber.toml` or `cookiecyber.json
 ```toml
 # .cookiecyber.toml
 [cookiecyber]
-diff_cap_limit = 50
-new_file_cap_limit = 250
+# Diff Limits (Ponytail Principle):
+# - diff_cap_limit: Max lines changed when EDITING existing files (default: 50).
+#   Set to any integer (e.g. 150, 500) or "free" / 0 for UNLIMITED edits.
+# - new_file_cap_limit: Max lines when CREATING new files / scaffolding (default: 250).
+#   Set to any integer or "free" / 0 for UNLIMITED scaffolding.
+diff_cap_limit = 50             # 50, 200, or "free" (unlimited)
+new_file_cap_limit = 250        # 250, 1000, or "free" (unlimited)
 restricted_branches = ["main", "master", "prod", "production", "release"]
 exclude_dirs = ["vendor", "node_modules", ".git", "dist", "build", "__pycache__"]
 shannon_entropy_threshold = 7.2

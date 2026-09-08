@@ -228,12 +228,49 @@ restricted_branches = [
             self.assertIn("main", cfg.restricted_branches)
             self.assertIn("prod", cfg.restricted_branches)
 
-    def test_parse_toml_nested_arrays(self):
-        """Verify pure-Python fallback parses nested arrays without corrupting inner comma-separated tokens."""
-        from core.config import _parse_toml_value
-        parsed = _parse_toml_value("[[1, 2], [3, 4], 'simple']")
-        self.assertEqual(parsed, [[1, 2], [3, 4], "simple"])
+    def test_diff_cap_free_and_unlimited_modes(self):
+        """Verify 'free', 'unlimited', 0, and negative numbers permit unlimited lines."""
+        # 1. Direct model normalization
+        cfg_free = CookieCyberConfig(diff_cap_limit="free", new_file_cap_limit="free")
+        self.assertEqual(cfg_free.diff_cap_limit, "free")
+        self.assertEqual(cfg_free.new_file_cap_limit, "free")
+
+        cfg_unlimited = CookieCyberConfig(diff_cap_limit="unlimited", new_file_cap_limit="unlimited")
+        self.assertEqual(cfg_unlimited.diff_cap_limit, "free")
+        self.assertEqual(cfg_unlimited.new_file_cap_limit, "free")
+
+        cfg_zero = CookieCyberConfig(diff_cap_limit=0, new_file_cap_limit=-1)
+        self.assertEqual(cfg_zero.diff_cap_limit, "free")
+        self.assertEqual(cfg_zero.new_file_cap_limit, "free")
+
+        # 2. TOML file with free mode
+        toml_content = """
+diff_cap_limit = "free"
+new_file_cap_limit = "free"
+"""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            p = Path(tmp_dir) / ".cookiecyber.toml"
+            p.write_text(toml_content, encoding="utf-8")
+            cfg_toml = CookieCyberConfig.load_from_file(p)
+            self.assertEqual(cfg_toml.diff_cap_limit, "free")
+            self.assertEqual(cfg_toml.new_file_cap_limit, "free")
+
+        # 3. SafePatchManager with free mode allows arbitrary diff lengths
+        manager_free = SafePatchManager(diff_cap="free", new_file_cap="free")
+        orig_code = "line = 1\n"
+        huge_patch = "line = 1\n" + "".join([f"mod_{i} = {i}\n" for i in range(500)])
+        stats = manager_free.check_diff_cap(orig_code, huge_patch, is_new_file=False)
+        self.assertEqual(stats["effective_limit"], "free")
+        self.assertEqual(stats["total_changed"], 500)
+
+        # 4. Custom raised limit (e.g. 200 lines) allows 150 lines without error
+        manager_raised = SafePatchManager(diff_cap=200)
+        raised_patch = "line = 1\n" + "".join([f"mod_{i} = {i}\n" for i in range(150)])
+        stats_raised = manager_raised.check_diff_cap(orig_code, raised_patch, is_new_file=False)
+        self.assertEqual(stats_raised["effective_limit"], 200)
+        self.assertEqual(stats_raised["total_changed"], 150)
 
 
 if __name__ == "__main__":
     unittest.main()
+

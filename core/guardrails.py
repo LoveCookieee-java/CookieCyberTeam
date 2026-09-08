@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from core.ast_scanner import ASTScanner, Finding
 from core.config import (
@@ -25,6 +25,7 @@ from core.config import (
     DEFAULT_DIFF_CAP_LIMIT,
     DEFAULT_NEW_FILE_CAP_LIMIT,
     DEFAULT_RESTRICTED_BRANCHES,
+    normalize_cap_limit,
 )
 from core.semgrep_adapter import SemgrepAdapter
 
@@ -947,8 +948,8 @@ class SafePatchManager:
 
     def __init__(
         self,
-        diff_cap: Optional[int] = None,
-        new_file_cap: Optional[int] = None,
+        diff_cap: Optional[Union[int, str]] = None,
+        new_file_cap: Optional[Union[int, str]] = None,
         semgrep: Optional[SemgrepAdapter] = None,
         enforce_token: bool = False,
         config: Optional[CookieCyberConfig] = None,
@@ -957,8 +958,10 @@ class SafePatchManager:
         allowed_roots: Optional[List[Union[str, Path]]] = None,
     ):
         self.config = config or CookieCyberConfig()
-        self.diff_cap = diff_cap if diff_cap is not None else self.config.diff_cap_limit
-        self.new_file_cap = new_file_cap if new_file_cap is not None else self.config.new_file_cap_limit
+        raw_diff_cap = diff_cap if diff_cap is not None else self.config.diff_cap_limit
+        raw_new_file_cap = new_file_cap if new_file_cap is not None else self.config.new_file_cap_limit
+        self.diff_cap = normalize_cap_limit(raw_diff_cap, DEFAULT_DIFF_CAP_LIMIT)
+        self.new_file_cap = normalize_cap_limit(raw_new_file_cap, DEFAULT_NEW_FILE_CAP_LIMIT)
         self.restricted_branches = (
             {b.lower() for b in restricted_branches} if restricted_branches is not None
             else set(self.config.restricted_branches)
@@ -1014,7 +1017,13 @@ class SafePatchManager:
         stats["is_new_file"] = is_new_file
         stats["effective_limit"] = limit
 
-        if stats["total_changed"] > limit:
+        is_free = (
+            limit == "free"
+            or (isinstance(limit, str) and limit.strip().lower() in ("free", "unlimited", "none", "inf", "infinity"))
+            or (isinstance(limit, (int, float)) and limit <= 0)
+        )
+
+        if not is_free and stats["total_changed"] > limit:
             file_type_desc = "New file scaffolding cap exceeded" if is_new_file else "Diff cap exceeded"
             raise GuardrailViolation(
                 gate_name="Diff Cap Gate",

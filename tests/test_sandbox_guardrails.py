@@ -480,6 +480,23 @@ class TestSafePatchGuardrails(unittest.TestCase):
         self.assertEqual(ctx.exception.gate_name, "Diff Cap Gate")
         self.assertIn("Diff cap exceeded", ctx.exception.message)
 
+    def test_diff_cap_free_mode_permits_unlimited_edits_and_scaffolding(self):
+        """SafePatchManager configured with 'free' permits unlimited modifications and new files."""
+        free_manager = SafePatchManager(diff_cap="free", new_file_cap="free")
+
+        # 1. Huge new file (1000 lines)
+        huge_new = "line\n" * 1000
+        stats_new = free_manager.check_diff_cap("", huge_new, file_name="huge_module.py")
+        self.assertEqual(stats_new["effective_limit"], "free")
+        self.assertEqual(stats_new["total_changed"], 1000)
+
+        # 2. Huge edit to existing file (800 lines changed)
+        orig = "init\n" * 5
+        huge_mod = orig + ("added\n" * 800)
+        stats_mod = free_manager.check_diff_cap(orig, huge_mod, file_name="existing.py")
+        self.assertEqual(stats_mod["effective_limit"], "free")
+        self.assertEqual(stats_mod["total_changed"], 800)
+
     def test_single_committer_session_token_lifecycle(self):
         """Verify committer session token generation, validation, and enforcement lifecycle."""
         # Unauthorized role cannot generate token

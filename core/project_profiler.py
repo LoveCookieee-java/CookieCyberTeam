@@ -305,9 +305,12 @@ class ProjectGenomeProfiler:
             ["mcp_adaptive_guide", "mcp_search_code", "mcp_scan_vulnerabilities"],
         )
 
+        diff_cap_display = "unlimited ('free')" if prof.get("diff_cap_limit") == "free" else f"maximum {prof.get('diff_cap_limit')} lines"
+        new_file_display = "unlimited ('free')" if prof.get("new_file_cap_limit") == "free" else f"maximum {prof.get('new_file_cap_limit')} lines"
+
         active_guardrails = [
             f"Gate 0 (Single-Committer): Only Lead Orchestrator can apply patches directly.",
-            f"Gate 1 (Diff Cap): Maximum {prof['diff_cap_limit']} lines for modified files, {prof['new_file_cap_limit']} lines for new files (Ponytail Principle).",
+            f"Gate 1 (Diff Cap): {diff_cap_display} for modified files, {new_file_display} for new files (Ponytail Principle).",
             f"Gate 1.5 (Ponytail Linter): Reject dead code and prioritize standard library over unlisted dependencies.",
             f"Gate 2 (Zero-Regression SAST): No new CWE vulnerabilities may be introduced.",
             f"Gate 3 (Git Branch Isolation): Direct commits/patches to '{prof['git']['branch']}' {'are BLOCKED' if prof['git']['is_restricted'] else 'permitted'}.",
@@ -318,9 +321,12 @@ class ProjectGenomeProfiler:
             "Gate 4 (Zero-Deletion Invariant): Do NOT execute file deletion commands (rm, del, Remove-Item, os.remove, unlink, rmdir).",
             "Do NOT use shell=True or unvalidated raw command strings.",
             "Do NOT add new 3rd-party dependencies when Python stdlib suffices.",
-            "Do NOT exceed the 50-line diff cap on existing files.",
-            "Do NOT push directly to protected branches (main, master, prod).",
         ]
+        if prof.get("diff_cap_limit") != "free":
+            prohibited_actions.append(f"Do NOT exceed the {prof.get('diff_cap_limit')}-line diff cap on existing files.")
+        else:
+            prohibited_actions.append("Diff cap is set to 'free' (unlimited line diffs allowed on existing files).")
+        prohibited_actions.append("Do NOT push directly to protected branches (main, master, prod).")
         if task_intent == "binary_triage":
             prohibited_actions.append("Zero-Execution Policy: Do NOT execute live untrusted binaries on host.")
 

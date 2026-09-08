@@ -1158,9 +1158,9 @@ class CookieCyberMCPServer:
                     "gate_1_5_ponytail": {
                         "dead_code_check": "YAGNI check: rejects uncalled symbols unless in __all__",
                         "stdlib_prioritization": "Rejects 3rd-party dependencies when stdlib equivalent exists unless listed in project",
-                        "diff_cap": "50 lines for modification, 250 lines for scaffolding",
+                        "diff_cap": f"{self.config.diff_cap_limit} lines for modification, {self.config.new_file_cap_limit} lines for scaffolding",
                     },
-                    "gate_2_diff_cap": self.config.max_diff_lines if hasattr(self.config, "max_diff_lines") else 50,
+                    "gate_2_diff_cap": self.config.diff_cap_limit,
                     "gate_3_sast_regression": "Zero new CWE vulnerabilities or count regressions",
                     "gate_4_zero_deletion": "Absolute prohibition of file deletion primitives (os.remove, unlink, shutil.rmtree, shell rm/del)",
                     "gate_5_git_isolation": "Protected branch commit prevention and single-committer capability token",
