@@ -10,7 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LoveCookieee-java/CookieCyberTeam"><img src="https://img.shields.io/badge/Release-v1.0.1-blue.svg?style=flat-square" alt="Release"></a>
+  <a href="https://smithery.ai/server/@LoveCookieee-java/CookieCyberTeam"><img src="https://smithery.ai/badge/@LoveCookieee-java/CookieCyberTeam" alt="Smithery Badge"></a>
+  <a href="https://pypi.org/project/cookie-cyber-team/"><img src="https://img.shields.io/pypi/v/cookie-cyber-team.svg?style=flat-square&color=blue" alt="PyPI version"></a>
+  <a href="https://github.com/LoveCookieee-java/CookieCyberTeam/actions"><img src="https://github.com/LoveCookieee-java/CookieCyberTeam/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
   <a href="#verification--benchmarks"><img src="https://img.shields.io/badge/Tests-290%20Passed%20(100%25)-success.svg?style=flat-square" alt="Tests"></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
@@ -21,9 +23,46 @@
 ---
 
 ### Quick Navigation
-[Overview](#overview) • [The Problem & Solution](#the-problem-why-cookiecyberteam) • [System Architecture](#system-architecture) • [Project Genome Profiler](#project-genome-profiler--adaptive-meta-guide) • [The 5 Guardrail Gates](#the-5-patching-guardrails) • [MCP Interface (16 Tools)](#mcp-interface-reference) • [Offline SCA & Binary Triage](#air-gapped-binary-triage--quarantine-vault) • [CLI & Pre-Commit](#standalone-headless-cli--pre-commit-hook) • [Configuration](#configuration) • [Verification](#verification--benchmarks)
+[⚡ Quickstart (5s)](#-quickstart-zero-install-in-5-seconds) • [Overview](#overview) • [The Problem & Solution](#the-problem-why-cookiecyberteam) • [System Architecture](#system-architecture) • [Project Genome Profiler](#project-genome-profiler--adaptive-meta-guide) • [The 5 Guardrail Gates](#the-5-patching-guardrails) • [MCP Interface (16 Tools)](#mcp-interface-reference) • [Offline SCA & Binary Triage](#air-gapped-binary-triage--quarantine-vault) • [CLI & Pre-Commit](#standalone-headless-cli--pre-commit-hook) • [Configuration](#configuration) • [Verification](#verification--benchmarks)
 
 ---
+
+## ⚡ Quickstart (Zero-Install in 5 Seconds)
+
+### 1. Zero-Install via `uvx` (Claude Desktop, Cursor, Windsurf)
+Add to your `claude_desktop_config.json`, `.cursor/mcp.json`, or Windsurf MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "cookie-cyber-team": {
+      "command": "uvx",
+      "args": ["cookie-cyber-team", "--stdio"]
+    }
+  }
+}
+```
+
+### 2. 1-Click Install via Smithery
+For Claude Code CLI or Claude Desktop:
+```bash
+npx -y @smithery/cli install @LoveCookieee-java/CookieCyberTeam --client claude
+```
+
+### 3. Standalone CLI & Pre-Commit Hook (No Clone Required)
+Run instant security scans without cloning or installing dependencies:
+```bash
+# Run one-off vulnerability scan on current directory
+uvx --from cookie-cyber-team cookiecyber scan . --fail-on high
+
+# Or integrate into your .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/LoveCookieee-java/CookieCyberTeam
+    rev: v1.0.1
+    hooks:
+      - id: cookiecyber-scan
+        args: ["--fail-on", "high"]
+```
 
 ## Overview
 

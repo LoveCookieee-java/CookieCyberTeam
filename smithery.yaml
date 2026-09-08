@@ -6,20 +6,24 @@ build:
 
 startCommand:
   type: stdio
-  config:
-    command: python
-    args:
-      - server.py
-      - --stdio
+  configSchema:
+    type: object
+    properties:
+      CAPE_API_URL:
+        type: string
+        description: "Optional CAPEv2 or Cuckoo sandbox REST API URL for dynamic malware detonation"
+        default: ""
+      CAPE_API_KEY:
+        type: string
+        description: "Optional API token for external CAPEv2 sandbox authentication"
+        default: ""
+  commandFunction: |-
+    (config) => ({
+      command: 'uvx',
+      args: ['cookie-cyber-team', '--stdio'],
+      env: {
+        ...(config.CAPE_API_URL ? { CAPE_API_URL: config.CAPE_API_URL } : {}),
+        ...(config.CAPE_API_KEY ? { CAPE_API_KEY: config.CAPE_API_KEY } : {})
+      }
+    })
 
-configSchema:
-  type: object
-  properties:
-    CAPE_API_URL:
-      type: string
-      description: "Optional CAPEv2 or Cuckoo sandbox REST API URL for dynamic malware detonation"
-      default: ""
-    CAPE_API_KEY:
-      type: string
-      description: "Optional API token for external CAPEv2 sandbox authentication"
-      default: ""

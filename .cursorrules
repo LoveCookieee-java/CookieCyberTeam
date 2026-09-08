@@ -1,0 +1,6 @@
+# CookieCyberTeam Cursor Rules
+
+- **Zero-External Dependencies Policy**: Use Python standard library exclusively for core runtime features.
+- **5-Gate Guardrails**: Every proposed patch must pass syntax validation, Ponytail minimalism, diff cap (<=50 lines), zero-regression SAST, and zero-deletion.
+- **Zero-Deletion Policy**: Never delete files on disk; move suspicious or temporary files to the quarantine vault with byte scrambling.
+- **Automated Verification**: Ensure all 290 unit tests pass 100% cleanly (`python -m unittest discover -s tests -v`).

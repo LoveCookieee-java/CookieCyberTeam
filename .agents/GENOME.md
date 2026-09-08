@@ -1,7 +1,7 @@
 # Project Genome: CookieCyberTeam Security Guardrails & Autonomous Defense System
 
 ## 1. DNA & Frameworks
-- **Version**: CookieCyberTeam V1.0 (Enterprise)
+- **Version**: CookieCyberTeam V1.0.1 (Enterprise)
 - **Runtime**: Python 3.9+ (Verified on 3.11/3.13)
 - **Protocol**: Model Context Protocol (MCP) JSON-RPC 2.0 over Stdio
 - **Core Architecture**: Zero external dependencies (Python stdlib: `ast`, `sqlite3`, `subprocess`, `graphlib`, `math`, `difflib`, `hashlib`, `re`, `struct`, `dataclasses`, `urllib`, `json`)
