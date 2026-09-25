@@ -299,6 +299,146 @@ DEFAULT_SOC_RULES: List[SOCRule] = [
 ]
 
 
+#: Agentic / MCP threat detections. Threat classes follow the project's ASI-0X
+#: scheme (adapted from the OWASP Top 10 for Agentic Applications 2026); these
+#: rules protect the agent surface rather than the endpoint.
+DEFAULT_SOC_RULES.extend([
+    SOCRule(
+        id="SOC-ASI01-01",
+        name="Agent Prompt Injection & Instruction Override",
+        technique_id="ASI-01",
+        technique_name="Agent Goal Hijack (prompt injection)",
+        severity="High",
+        description="Detects content that attempts to override, replace, or hide an agent's instructions.",
+        patterns=[
+            r"ignore\s+(?:all\s+|any\s+)?(?:the\s+)?(?:previous|prior|above|earlier)\s+(?:instructions?|rules?|directives?|prompts?)",
+            r"disregard\s+(?:all\s+|any\s+)?(?:the\s+)?(?:previous|prior|system)\s+(?:instructions?|prompts?)",
+            r"override\s+(?:the\s+|your\s+)?(?:system\s+)?(?:prompt|instructions?|guardrails?)",
+            r"do\s+not\s+(?:tell|inform|notify)\s+(?:the\s+)?(?:user|human|operator)",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Treat the offending artifact as untrusted data and stop the task that consumed it.",
+            "2. Isolate the content channel (skill, file, or tool output) that carried the instruction.",
+        ],
+        remediation_playbook=[
+            "1. Re-run the task with untrusted content clearly delimited from instructions.",
+            "2. Add the pattern to the agent-surface audit baseline and re-audit the skill catalog.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-ASI02-01",
+        name="Over-broad Agent Tool Grant",
+        technique_id="ASI-02",
+        technique_name="Tool Misuse & Exploitation",
+        severity="High",
+        description="Detects wildcarded tool grants that grant an agent arbitrary command or file access.",
+        patterns=[
+            r"allowed[-_ ]?tools\s*[:=][^\r\n]*\(\s*\*\s*\)",
+            r"allowed[-_ ]?tools\s*[:=][^\r\n]*\*",
+            r"\b(?:Bash|Shell|Exec)\s*\(\s*\*",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Revoke the wildcard grant before the skill is used again.",
+            "2. Re-issue the grant scoped to the specific subcommands and paths required.",
+        ],
+        remediation_playbook=[
+            "1. Enforce least-privilege tool grants across the skill and MCP inventory.",
+            "2. Record the scoped grant in the audit receipt for the change.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-ASI03-01",
+        name="Agent Secret Exfiltration Shape",
+        technique_id="ASI-03",
+        technique_name="Sensitive Information Disclosure",
+        severity="High",
+        description="Detects outbound transfer or upload shapes that could carry secrets or file contents.",
+        patterns=[
+            r"\b(?:curl|wget)\b[^\r\n]{0,200}?(?:-d\b|--data\b|--upload-file\b|-T\b)",
+            r"base64[^\r\n]{0,60}\|\s*(?:curl|wget|nc|ncat)\b",
+            r"(?:requests|httpx|urllib)\.(?:post|put)\s*\([^\r\n]{0,200}(?:environ|getenv|open\()",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Block egress to the destination and rotate any credential that may have been read.",
+            "2. Preserve the artifact and its execution context as evidence.",
+        ],
+        remediation_playbook=[
+            "1. Remove outbound transfer logic from the skill or tool definition.",
+            "2. Route any required integration through an allow-listed, inspected egress proxy.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-ASI07-01",
+        name="Remote Fetch Piped Into Interpreter",
+        technique_id="ASI-07",
+        technique_name="Skills, Plugins & Supply-Chain Compromise",
+        severity="High",
+        description="Detects skills or scripts that fetch and execute remote code or pull from an untrusted index.",
+        patterns=[
+            r"\b(?:curl|wget|iwr|Invoke-WebRequest)\b[^\r\n]{0,200}\|\s*(?:sudo\s+)?(?:bash|sh|zsh|python[0-9.]*|node|pwsh|powershell)\b",
+            r"\bnpx\b[^\r\n]{0,80}",
+            r"pip[0-9.]*\s+install[^\r\n]{0,120}--(?:index-url|extra-index-url|trusted-host)",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Quarantine the artifact that performs the remote fetch.",
+            "2. Pin or vendor the dependency from a reviewed, trusted source instead.",
+        ],
+        remediation_playbook=[
+            "1. Forbid remote-execute pipes in skills and scripts.",
+            "2. Add lockfile and index review to the supply-chain gate.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-ASI08-01",
+        name="Agent Sandbox or Isolation Boundary Bypass",
+        technique_id="ASI-08",
+        technique_name="Sandbox & Egress Escape",
+        severity="High",
+        description="Detects privileged containers, socket mounts, or host networking that escape isolation.",
+        patterns=[
+            r"--privileged\b",
+            r"/var/run/docker\.sock",
+            r"--network[= ]host\b",
+            r"\b(?:nsenter|unshare)\b",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Terminate the sandbox that requested the privileged capability.",
+            "2. Re-run the task under the standard restricted sandbox tier.",
+        ],
+        remediation_playbook=[
+            "1. Deny privileged containers, socket mounts, and host network mode in policy.",
+            "2. Add a capability allow-list to the container launch template.",
+        ],
+    ),
+    SOCRule(
+        id="SOC-ASI10-01",
+        name="Long-lived or Hard-coded Agent Capability Token",
+        technique_id="ASI-10",
+        technique_name="Agent Identity & Privilege Abuse",
+        severity="Medium",
+        description="Detects hard-coded or non-expiring agent capability credentials that undermine revocation.",
+        patterns=[
+            r"(?:hard[- ]?code|commit|embed)[^\r\n]{0,60}(?:token|api[_-]?key|credential)",
+            r"non[- ]?expir\w*[^\r\n]{0,30}(?:token|key|credential)",
+        ],
+        match_logic="any",
+        containment_playbook=[
+            "1. Revoke the long-lived credential and re-issue an ephemeral, scoped token.",
+            "2. Audit where the credential was read or reused.",
+        ],
+        remediation_playbook=[
+            "1. Issue per-task, revocable capability tokens only.",
+            "2. Remove hard-coded credentials from skills and configuration.",
+        ],
+    ),
+])
+
+
 class SOCRuleEngine:
     """
     Pure-Python Dynamic SOC Detection Rule Engine.

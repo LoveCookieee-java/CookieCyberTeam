@@ -16,6 +16,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
@@ -1104,7 +1105,10 @@ class SafePatchManager:
         self.scanner = ASTScanner(config=self.config)
         self.semgrep = semgrep or SemgrepAdapter()
         self.enforce_token = enforce_token
-        self._committer_tokens: Set[str] = set()
+        # Insertion-ordered ledger used as a bounded set: the oldest token is always
+        # the eviction candidate, so a busy session can never invalidate the token it
+        # just handed out (a plain set would pop an arbitrary member).
+        self._committer_tokens: OrderedDict[str, None] = OrderedDict()
         self._tokens_issued: int = 0
 
     def generate_committer_token(self, role: str = "Lead Orchestrator") -> str:
@@ -1120,10 +1124,10 @@ class SafePatchManager:
             )
         MAX_ACTIVE_TOKENS = 500
         if len(self._committer_tokens) >= MAX_ACTIVE_TOKENS:
-            # Evict an arbitrary active token to enforce bounded memory in long sessions
-            self._committer_tokens.pop()
+            # Deterministic FIFO eviction: drop the oldest issuance to bound memory
+            self._committer_tokens.popitem(last=False)
         token = f"lead-token-{secrets.token_hex(16)}"
-        self._committer_tokens.add(token)
+        self._committer_tokens[token] = None
         self._tokens_issued += 1
         return token
 
@@ -1133,7 +1137,7 @@ class SafePatchManager:
 
     def revoke_committer_token(self, token: str) -> None:
         """Revoke an active committer session token."""
-        self._committer_tokens.discard(token)
+        self._committer_tokens.pop(token, None)
 
     def check_diff_cap(
         self,

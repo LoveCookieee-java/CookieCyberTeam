@@ -104,15 +104,21 @@ def quarantine_file(
     sha256_hash = hashlib.sha256(raw_bytes).hexdigest()
     md5_hash = hashlib.md5(raw_bytes).hexdigest()
     now_iso = datetime.now(timezone.utc).isoformat()
-    quarantine_id = f"quar_{int(time.time())}_{sha256_hash[:8]}"
+    base_quarantine_id = f"quar_{int(time.time())}_{sha256_hash[:8]}"
+    quarantine_id = base_quarantine_id
 
     # 5. Obfuscate payload (XOR 0x5A) so OS loaders cannot parse PE/ELF/scripts
     obfuscated_bytes = bytes([b ^ XOR_KEY for b in raw_bytes])
 
-    # 6. Target path in quarantine vault
+    # 6. Target path in quarantine vault. Identical artifacts quarantined within the
+    # same second share an ID, so disambiguate to never overwrite vaulted evidence.
     safe_name = re.sub(r"[^\w\-.]", "_", src.name)
-    quarantine_filename = f"{quarantine_id}_{safe_name}.quarantine.enc"
-    dst = vault / quarantine_filename
+    dst = vault / f"{quarantine_id}_{safe_name}.quarantine.enc"
+    collision_index = 1
+    while dst.exists():
+        quarantine_id = f"{base_quarantine_id}_{collision_index}"
+        dst = vault / f"{quarantine_id}_{safe_name}.quarantine.enc"
+        collision_index += 1
 
     # Ensure write permission before in-place overwriting on Windows
     try:
@@ -121,9 +127,22 @@ def quarantine_file(
     except Exception:
         pass
 
-    # Write obfuscated bytes directly into source first, then atomically move to vault
-    src.write_bytes(obfuscated_bytes)
-    os.replace(src, dst)
+    # Write obfuscated bytes directly into source first, then atomically move to vault.
+    # If relocation fails, the pristine bytes are written back so the artifact is never
+    # left scrambled-but-unstored.
+    try:
+        src.write_bytes(obfuscated_bytes)
+        os.replace(src, dst)
+    except OSError as exc:
+        try:
+            src.write_bytes(raw_bytes)
+        except OSError:
+            pass
+        return {
+            "success": False,
+            "error": f"Quarantine relocation failed (original artifact bytes restored): {exc}",
+            "file_path": str(file_path),
+        }
 
     # 7. Strip execution permissions (Read-only on Windows, chmod 000 on POSIX)
     try:

@@ -70,6 +70,8 @@ class Finding:
     cvss_vector: str
     code_snippet: str
     remediation: str
+    confidence: Optional[float] = None
+    fingerprint: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -83,6 +85,8 @@ class Finding:
             "cvss_vector": self.cvss_vector,
             "code_snippet": self.code_snippet,
             "remediation": self.remediation,
+            "confidence": self.confidence,
+            "fingerprint": self.fingerprint,
         }
 
 
@@ -1251,6 +1255,31 @@ class ASTScannerVisitor(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+#: Conservative allow-list for git revision specs supplied by callers. Git parses
+#: any positional argument beginning with '-' as an option, so an unchecked revision
+#: such as '--output=/etc/passwd' turns a delta scan into an arbitrary file write (CWE-88).
+_SAFE_GIT_REV_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@{}~^-]*$")
+
+
+def is_safe_git_rev(rev: Any) -> bool:
+    """
+    Return True when ``rev`` is safe to pass to git as a positional revision.
+
+    Rejects empty values, option-like values (leading '-'), whitespace/control
+    characters, rev:path colon syntax, and anything outside a conservative
+    ref/revision charset. Callers that fail this check must not invoke git with
+    the value at all.
+    """
+    if not isinstance(rev, str):
+        return False
+    candidate = rev.strip()
+    if not candidate or len(candidate) > 255 or candidate.startswith("-"):
+        return False
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in candidate):
+        return False
+    return bool(_SAFE_GIT_REV_RE.match(candidate))
+
+
 class ASTScanner:
     """Orchestrates AST parsing, security rule checks, and Delta diff scanning."""
 
@@ -1410,8 +1439,14 @@ class ASTScanner:
         except Exception:
             return self.scan_file(target, modified_lines=None)
 
+        # Never hand an untrusted, option-like revision to git: fall back to scanning
+        # every line rather than granting an argument-injection file write.
+        if not is_safe_git_rev(base_commit):
+            return self.scan_file(target, modified_lines=None)
+
         # Extract modified line numbers using git diff
-        argv = ["git", "diff", "-U0", base_commit, "--", rel_posix]
+        # --no-ext-diff prevents repo-configured external diff drivers from running.
+        argv = ["git", "diff", "--no-ext-diff", "-U0", base_commit, "--", rel_posix]
         try:
             res = subprocess.run(argv, cwd=str(repo), capture_output=True, text=True, shell=False, timeout=10)
             if res.returncode != 0:

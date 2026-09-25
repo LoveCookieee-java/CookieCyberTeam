@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from core.ast_scanner import ASTScanner, calculate_shannon_entropy
+from core.ast_scanner import ASTScanner, calculate_shannon_entropy, is_safe_git_rev
 from core.semgrep_adapter import SemgrepAdapter
 
 
@@ -928,6 +928,64 @@ class TestASTScanner(unittest.TestCase):
         findings = self.scanner.scan_code(code)
         cwe22 = [f for f in findings if f.cwe_id == "CWE-22"]
         self.assertGreaterEqual(len(cwe22), 1)
+
+
+class TestGitRevisionArgumentInjection(unittest.TestCase):
+    """
+    Delta scanning must never hand a caller-supplied revision to git unchecked.
+
+    Git parses positional arguments beginning with '-' as options, so a revision
+    like '--output=/path' turns `git diff` into an arbitrary file write (CWE-88).
+    """
+
+    def test_safe_revision_allow_list(self):
+        for rev in ("HEAD", "HEAD~1", "HEAD^", "abc1234", "main", "origin/main", "v1.0.0"):
+            self.assertTrue(is_safe_git_rev(rev), f"{rev!r} should be accepted")
+
+    def test_option_like_and_malformed_revisions_rejected(self):
+        for rev in (
+            "--output=/etc/passwd",
+            "-U0",
+            "--ext-diff",
+            "--no-index",
+            "",
+            "   ",
+            "HEAD:secret.txt",
+            "HEAD; rm -rf /",
+            "HEAD\n--output=x",
+            "HEAD --output=x",
+            None,
+            123,
+        ):
+            self.assertFalse(is_safe_git_rev(rev), f"{rev!r} must be rejected")
+
+    def test_scan_git_diff_never_passes_option_like_revision_to_git(self):
+        """The injected revision must never reach the git argv."""
+        scanner = ASTScanner()
+        seen_argv = []
+
+        def spy(argv, *args, **kwargs):
+            seen_argv.append(list(argv))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            return result
+
+        injected = "--output=pwned.txt"
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            target = Path(tmp_dir) / "app.py"
+            target.write_text("import os\ndef f(x):\n    os.system(x)\n", encoding="utf-8")
+            with patch("core.ast_scanner.subprocess.run", side_effect=spy):
+                findings = scanner.scan_git_diff(tmp_dir, target, base_commit=injected)
+
+        for argv in seen_argv:
+            self.assertNotIn(injected, argv, f"injected revision reached git: {argv}")
+            for arg in argv:
+                self.assertFalse(str(arg).startswith("--output"), f"option injection: {argv}")
+
+        # Falls back to a full-file scan rather than silently returning nothing.
+        self.assertGreaterEqual(len(findings), 1)
 
 
 if __name__ == "__main__":

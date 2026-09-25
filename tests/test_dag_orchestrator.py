@@ -3,7 +3,10 @@ Unit tests for Multi-Agent DAG Orchestration, SQLite WAL Shared State,
 Point-to-Point Mailbox, Loop Drainage Stop-Hooks, and Max Hop TTL = 20.
 """
 
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from core.dag_engine import DAGEngine, DAGCycleError, MAX_HOP_TTL
 
 
@@ -234,6 +237,65 @@ class TestDAGOrchestrator(unittest.TestCase):
 
         logs = self.engine.get_audit_log(event_type="TASK_ORPHAN_RECOVERED")
         self.assertEqual(len(logs), 2)
+
+
+class TestDAGEngineDiskBacked(unittest.TestCase):
+    """
+    Regression coverage for the on-disk (production) database path.
+
+    The in-memory engine shares a single connection, so it cannot surface write-lock
+    contention between nested connections. The server uses a WAL file database, so
+    these paths need explicit coverage.
+    """
+
+    def test_recover_orphaned_tasks_on_disk_backed_db(self):
+        """
+        Orphan recovery must not audit-log inside its own write transaction.
+
+        log_event() opens a second connection; doing so while the recovery UPDATE
+        holds the WAL write lock stalls for the full 15s busy timeout and then fails
+        with "database is locked", rolling back the entire recovery.
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            db_path = Path(tmp_dir) / "state.db"
+            engine = DAGEngine(db_path=str(db_path))
+            try:
+                engine.add_task("t1", "Audit", "Security Auditor", [])
+                engine.update_task_status("t1", "RUNNING")
+
+                started = time.monotonic()
+                res = engine.recover_orphaned_tasks()
+                elapsed = time.monotonic() - started
+
+                self.assertTrue(res["success"])
+                self.assertEqual(res["recovered_count"], 1)
+                self.assertEqual(engine.get_task("t1")["status"], "READY")
+
+                logs = engine.get_audit_log(event_type="TASK_ORPHAN_RECOVERED")
+                self.assertEqual(len(logs), 1)
+
+                # Must never reach the SQLite busy timeout.
+                self.assertLess(elapsed, 5.0, f"recovery stalled for {elapsed:.1f}s")
+            finally:
+                engine.close()
+
+    def test_disk_backed_recovery_with_multiple_orphans(self):
+        """Each recovered orphan produces exactly one audit entry, in order."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            engine = DAGEngine(db_path=str(Path(tmp_dir) / "state.db"))
+            try:
+                engine.add_task("a", "Task A", "Worker 1", [])
+                engine.add_task("b", "Task B", "Worker 2", ["a"])
+                engine.update_task_status("a", "RUNNING")
+                engine.update_task_status("b", "RUNNING")
+
+                res = engine.recover_orphaned_tasks()
+                self.assertEqual(res["recovered_count"], 2)
+                self.assertEqual(engine.get_task("a")["status"], "READY")
+                self.assertEqual(engine.get_task("b")["status"], "PENDING")
+                self.assertEqual(len(engine.get_audit_log(event_type="TASK_ORPHAN_RECOVERED")), 2)
+            finally:
+                engine.close()
 
 
 if __name__ == "__main__":

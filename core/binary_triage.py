@@ -13,6 +13,8 @@ import struct
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from core.malware_intel import enrich_triage
+
 
 def calculate_entropy(data: bytes) -> float:
     """Calculate Shannon Entropy (0.0 - 8.0 bits per byte)."""
@@ -403,6 +405,197 @@ def extract_ioc_strings(data: bytes, max_strings: int = 150) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Deep static analysis (still zero-execution)
+# ---------------------------------------------------------------------------
+
+#: PE data-directory index -> label (only the entries with defensive value).
+PE_DIRECTORY_LABELS: Dict[int, str] = {
+    0: "Export Table",
+    1: "Import Table",
+    2: "Resource Table",
+    3: "Exception Table",
+    4: "Certificate Table (Authenticode)",
+    5: "Base Relocation Table",
+    6: "Debug Directory",
+    9: "TLS Table (callbacks)",
+    10: "Load Configuration",
+    12: "IAT",
+    13: "Delay Import Descriptor",
+    14: "CLR Runtime Header (.NET)",
+}
+
+#: Implant / tooling markers expressed as defensive detection signatures.
+#: Data-only: every entry maps an artifact string to the ATT&CK technique it
+#: is consistent with. No offensive capability is represented here.
+IMPLANT_SIGNATURE_RULES: List[Dict[str, str]] = [
+    {"name": "Reflective loader stub", "pattern": r"reflectiveload",
+     "technique_id": "T1620", "tactic": "Stealth",
+     "description": "In-memory PE loader stub marker (fileless module loading)."},
+    {"name": "C2 submit endpoint", "pattern": r"(?:submit|gate|panel)\.php\b",
+     "technique_id": "T1071.001", "tactic": "Command and Control",
+     "description": "HTTP beacon callback endpoint pattern."},
+    {"name": "Directory/domain discovery tooling", "pattern": r"(?:sharphound|bloodhound|adfind)",
+     "technique_id": "T1087", "tactic": "Discovery",
+     "description": "Active Directory enumeration tooling marker."},
+    {"name": "Remote access utility", "pattern": r"(?:anydesk|teamviewer|screenconnect|atera)",
+     "technique_id": "T1219", "tactic": "Command and Control",
+     "description": "Commercial remote-monitoring tool used for hands-on access."},
+    {"name": "Tunnelling/proxy utility", "pattern": r"(?:ngrok|chisel|socat|frpc?\b)",
+     "technique_id": "T1572", "tactic": "Command and Control",
+     "description": "Protocol tunnelling or reverse-proxy utility marker."},
+    {"name": "Cloud sync exfiltration tooling", "pattern": r"(?:rclone|mega\.nz|anonfiles|transfer\.sh)",
+     "technique_id": "T1567", "tactic": "Exfiltration",
+     "description": "Exfiltration to a cloud storage service."},
+    {"name": "Anonymising network client", "pattern": r"(?:tor\b|\.onion\b|snowflake\b)",
+     "technique_id": "T1090.003", "tactic": "Command and Control",
+     "description": "Anonymising proxy or Tor hidden-service usage."},
+    {"name": "Credential-harvest toolkit", "pattern": r"(?:lazagne|pypykatz|secretsdump)",
+     "technique_id": "T1003", "tactic": "Credential Access",
+     "description": "Credential harvesting toolkit marker."},
+    {"name": "Lateral movement framework", "pattern": r"(?:crackmapexec|impacket|psexec)",
+     "technique_id": "T1021", "tactic": "Lateral Movement",
+     "description": "Remote-service lateral movement framework marker."},
+    {"name": "Script-host invocation", "pattern": r"mshta(?:\.exe)?|wscript(?:\.exe)?|cscript(?:\.exe)?",
+     "technique_id": "T1218", "tactic": "Stealth",
+     "description": "Signed script-host binary proxy execution marker."},
+]
+
+
+def _u16(data: bytes, offset: int) -> int:
+    if offset + 2 > len(data):
+        return 0
+    return struct.unpack_from("<H", data, offset)[0]
+
+
+def _u32(data: bytes, offset: int) -> int:
+    if offset + 4 > len(data):
+        return 0
+    return struct.unpack_from("<I", data, offset)[0]
+
+
+def analyze_pe_deep(data: bytes, pe_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """
+    Extract deeper PE structure signals without ever executing the artifact.
+
+    Adds overlay (appended payload) detection, data-directory presence, an
+    entry-point-to-section mapping, and entry-point section anomalies on top of
+    the header dissection already performed by ``parse_magic_header``.
+    """
+    result: Dict[str, Any] = {
+        "available": False,
+        "overlay": {"present": False, "size": 0, "entropy": 0.0, "offset_hex": "0x0"},
+        "directories": {},
+        "entry_point": {},
+        "anomalies": [],
+    }
+    if not data or len(data) < 0x40 or not data.startswith(b"MZ"):
+        return result
+
+    pe_offset = _u32(data, 0x3C)
+    if not (0x40 <= pe_offset <= len(data) - 24) or data[pe_offset:pe_offset + 4] != b"PE\x00\x00":
+        return result
+    result["available"] = True
+
+    opt_offset = pe_offset + 24
+    optional_magic = _u16(data, opt_offset)
+    is_pe32_plus = optional_magic == 0x20B
+    directories_offset = opt_offset + (112 if is_pe32_plus else 96)
+
+    directories: Dict[str, Dict[str, Any]] = {}
+    if directories_offset + 8 <= len(data):
+        for index, label in PE_DIRECTORY_LABELS.items():
+            rva = _u32(data, directories_offset + index * 8)
+            size = _u32(data, directories_offset + index * 8 + 4)
+            if rva or size:
+                directories[label] = {"rva": hex(rva), "size": size}
+                # TLS callbacks and a missing Authenticode signature are notable.
+                if index == 9:
+                    result["anomalies"].append(
+                        "TLS callback directory present (code executes before the entry point)"
+                    )
+                if index == 4 and size == 0:
+                    result["anomalies"].append("No Authenticode certificate table (binary is unsigned)")
+    else:
+        result["anomalies"].append("PE data directory table is truncated or malformed")
+    result["directories"] = directories
+
+    # Overlay: any bytes after the end of the last mapped section.
+    raw_end = 0
+    for section in (pe_info or {}).get("sections", []) or []:
+        try:
+            ptr = int(section.get("raw_data_pointer", "0x0"), 16)
+            size = int(section.get("raw_data_size", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        raw_end = max(raw_end, ptr + size)
+    if raw_end and 0 < raw_end < len(data):
+        overlay = data[raw_end:]
+        h = calculate_entropy(overlay)
+        result["overlay"] = {
+            "present": True,
+            "size": len(overlay),
+            "entropy": h,
+            "offset_hex": f"0x{raw_end:08x}",
+        }
+        if len(overlay) >= 512 and h >= 6.5:
+            result["anomalies"].append(
+                f"High-entropy overlay of {len(overlay)} bytes at {hex(raw_end)} "
+                "(appended or compressed payload)"
+            )
+
+    # Entry point -> section mapping.
+    entry_rva = _u32(data, opt_offset + 16)
+    ep_section = None
+    for section in (pe_info or {}).get("sections", []) or []:
+        try:
+            vaddr = int(section.get("virtual_address", "0x0"), 16)
+        except (TypeError, ValueError):
+            continue
+        vsize = int(section.get("virtual_size", 0) or 0)
+        if vaddr <= entry_rva < vaddr + max(vsize, 1):
+            ep_section = section
+            break
+    result["entry_point"] = {
+        "rva": hex(entry_rva),
+        "section": (ep_section or {}).get("name", "unmapped"),
+    }
+    if ep_section is not None:
+        if ep_section.get("is_writable"):
+            result["anomalies"].append(
+                f"Entry point resolves into writable section '{ep_section.get('name')}'"
+            )
+        if float(ep_section.get("entropy", 0.0) or 0.0) >= 7.2:
+            result["anomalies"].append(
+                f"Entry-point section '{ep_section.get('name')}' has high entropy "
+                f"({ep_section.get('entropy')}), suggesting packing"
+            )
+    return result
+
+
+def detect_implant_signatures(data: bytes, max_hits: int = 20) -> List[Dict[str, Any]]:
+    """Match implant/tooling markers against raw bytes and map them to ATT&CK."""
+    hits: List[Dict[str, Any]] = []
+    for rule in IMPLANT_SIGNATURE_RULES:
+        try:
+            regex = re.compile(rule["pattern"].encode("ascii"), re.IGNORECASE)
+        except re.error:
+            continue
+        match = regex.search(data)
+        if match:
+            hits.append({
+                "name": rule["name"],
+                "marker": match.group(0).decode("ascii", "replace"),
+                "offset_hex": f"0x{match.start():08x}",
+                "technique_id": rule["technique_id"],
+                "tactic": rule["tactic"],
+                "description": rule["description"],
+            })
+        if len(hits) >= max_hits:
+            break
+    return hits
+
+
 class BinaryTriageEngine:
     """
     Air-Gapped Binary Triage Engine.
@@ -445,6 +638,8 @@ class BinaryTriageEngine:
 
             # Header / format dissection
             header_info = parse_magic_header(data)
+            pe_deep = analyze_pe_deep(data, header_info) if header_info.get("format") == "PE" else {}
+            implants = detect_implant_signatures(data)
 
             # IOC String extraction
             ioc_info = extract_ioc_strings(data)
@@ -520,6 +715,59 @@ class BinaryTriageEngine:
                     risk = "Medium"
                 reasons.append("Persistence registry keys detected in binary")
 
+            # Deep PE structure signals (overlay, directories, entry point).
+            if pe_deep.get("overlay", {}).get("present"):
+                ov = pe_deep["overlay"]
+                evidence_chain.append(
+                    f"[OVERLAY] {ov['size']} bytes appended at {ov['offset_hex']} (entropy {ov['entropy']})"
+                )
+                if risk == "Low":
+                    risk = "Medium"
+                reasons.append("Appended overlay data present beyond the last section")
+            for anomaly in pe_deep.get("anomalies", []):
+                evidence_chain.append(f"[PE DEEP ANOMALY]: {anomaly}")
+            if pe_deep.get("entry_point", {}).get("section"):
+                evidence_chain.append(
+                    f"[ENTRY POINT] {pe_deep['entry_point']['rva']} in section "
+                    f"'{pe_deep['entry_point']['section']}'"
+                )
+            for imp in implants:
+                evidence_chain.append(
+                    f"[IMPLANT MARKER] {imp['technique_id']} {imp['name']} "
+                    f"@ {imp['offset_hex']}: {imp['marker']}"
+                )
+            if implants:
+                if risk in ("Low", "Medium"):
+                    risk = "High"
+                reasons.append(
+                    f"Implant/tooling markers matched: {', '.join(i['name'] for i in implants[:3])}"
+                )
+
+            # Malware intelligence enrichment: imphash, fuzzy hash, family match,
+            # and ATT&CK technique inference. Never executes the artifact.
+            ioc_summary_text = " ".join(
+                ioc_info["urls_detected"] + ioc_info["ips_detected"]
+                + ioc_info["registry_keys_detected"] + ioc_info["suspicious_apis_detected"]
+                + ioc_info["sample_strings"][:50]
+            )
+            intel = enrich_triage(sha256=sha256, md5=md5, data=data, ioc_summary_text=ioc_summary_text)
+            if intel.get("imphash"):
+                evidence_chain.append(f"[IMPHASH] {intel['imphash']} (import-hash cluster key)")
+            if intel.get("fuzzy_hash"):
+                evidence_chain.append(f"[FUZZY HASH] {intel['fuzzy_hash']}")
+            for fam in intel.get("family_matches", [])[:3]:
+                evidence_chain.append(
+                    f"[FAMILY MATCH] {fam['family']} (score {fam['match_score']}, "
+                    f"markers: {', '.join(fam['matched_markers'][:4])})"
+                )
+            for tech in intel.get("techniques", [])[:5]:
+                evidence_chain.append(
+                    f"[ATT&CK] {tech['technique_id']} {tech['technique_name']} ({tech['tactic']})"
+                )
+            if intel.get("family_matches") and risk == "Low":
+                risk = "Medium"
+                reasons.append("Signature matches a catalogued malware family")
+
             return {
                 "success": True,
                 "file_path": str(p),
@@ -529,6 +777,9 @@ class BinaryTriageEngine:
                     "sha256": sha256,
                     "md5": md5,
                 },
+                "malware_intel": intel,
+                "pe_deep_analysis": pe_deep,
+                "implant_signatures": implants,
                 "header": header_info,
                 "entropy": {
                     "global": global_entropy,

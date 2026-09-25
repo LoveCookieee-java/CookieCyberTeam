@@ -14,7 +14,7 @@
   <a href="https://pypi.org/project/cookie-cyber-team/"><img src="https://img.shields.io/pypi/v/cookie-cyber-team.svg?style=flat-square&color=blue" alt="PyPI version"></a>
   <a href="https://github.com/LoveCookieee-java/CookieCyberTeam/actions"><img src="https://github.com/LoveCookieee-java/CookieCyberTeam/actions/workflows/ci.yml/badge.svg" alt="CI Status"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/Python-3.9+-3776AB.svg?style=flat-square&logo=python&logoColor=white" alt="Python"></a>
-  <a href="#verification--benchmarks"><img src="https://img.shields.io/badge/Tests-332%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Test Status" /></a>
+  <a href="#verification--benchmarks"><img src="https://img.shields.io/badge/Tests-475%20Passed%20(100%25)-brightgreen?style=for-the-badge&logo=pytest&logoColor=white" alt="Test Status" /></a>
   <a href="#system-architecture"><img src="https://img.shields.io/badge/Protocol-MCP%20JSON--RPC%202.0-8A2BE2.svg?style=flat-square" alt="MCP"></a>
   <a href="#the-5-patching-guardrails"><img src="https://img.shields.io/badge/Safety-Zero--Deletion%20%7C%20Air--Gapped-red.svg?style=flat-square" alt="Safety"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License"></a>
@@ -23,7 +23,7 @@
 ---
 
 ### Quick Navigation
-[⚡ Quickstart (5s)](#-quickstart-zero-install-in-5-seconds) • [Overview](#overview) • [The Problem & Solution](#the-problem-why-cookiecyberteam) • [System Architecture](#system-architecture) • [Project Genome Profiler](#project-genome-profiler--adaptive-meta-guide) • [The 5 Guardrail Gates](#the-5-patching-guardrails) • [Ponytail Principle](#ponytail-principle-the-lazy-senior-dev-mindset--native-playbook) • [MCP Interface (19 Tools)](#mcp-interface-reference) • [Offline SCA & Binary Triage](#air-gapped-binary-triage--quarantine-vault) • [CLI & Pre-Commit](#standalone-headless-cli--pre-commit-hook) • [Configuration](#configuration) • [Verification](#verification--benchmarks)
+[⚡ Quickstart (5s)](#-quickstart-zero-install-in-5-seconds) • [Overview](#overview) • [The Problem & Solution](#the-problem-why-cookiecyberteam) • [System Architecture](#system-architecture) • [Project Genome Profiler](#project-genome-profiler--adaptive-meta-guide) • [The 5 Guardrail Gates](#the-5-patching-guardrails) • [Ponytail Principle](#ponytail-principle-the-lazy-senior-dev-mindset--native-playbook) • [MCP Interface (31 Tools)](#mcp-interface-reference) • [Offline SCA & Binary Triage](#air-gapped-binary-triage--quarantine-vault) • [CLI & Pre-Commit](#standalone-headless-cli--pre-commit-hook) • [Configuration](#configuration) • [Verification](#verification--benchmarks)
 
 ---
 
@@ -58,7 +58,7 @@ uvx --from cookie-cyber-team cookiecyber scan . --fail-on high
 # Or integrate into your .pre-commit-config.yaml
 repos:
   - repo: https://github.com/LoveCookieee-java/CookieCyberTeam
-    rev: v1.0.2
+    rev: v1.1.0
     hooks:
       - id: cookiecyber-scan
         args: ["--fail-on", "high"]
@@ -103,7 +103,7 @@ When autonomous LLM agents (Cursor, Claude Code, Windsurf, Antigravity) attempt 
 │                      CookieCyberTeam MCP Server                        │
 │                                                                        │
 │ ┌──────────────────────────────────┐ ┌───────────────────────────────┐ │
-│ │  MCP Tools (19 Tools)            │ │  MCP Resources (9 Resources)  │ │
+│ │  MCP Tools (31 Tools)            │ │  MCP Resources (16 Resources) │ │
 │ │  • mcp_adaptive_guide (Genome)   │ │  • mcp://context/genome       │ │
 │ │  • mcp_scan_vulnerabilities      │ │  • mcp://rules/active-gates   │ │
 │ │  • mcp_search_code (Semble FTS5) │ │  • mcp://rules/standards      │ │
@@ -113,16 +113,23 @@ When autonomous LLM agents (Cursor, Claude Code, Windsurf, Antigravity) attempt 
 │ │  • mcp_preview_surgical_patch    │ │  • mcp://state/tool-index     │ │
 │ │  • mcp_apply_safe_patch (Roll)   │ │  • mcp://playbooks/triage     │ │
 │ │  • mcp_triage_binary (Air-Gap)   │ │  • mcp://playbooks/ir         │ │
-│ │  • mcp_run_diagnostic_tool       ├─┴───────────────────────────────┤ │
-│ │  • mcp_submit_dynamic_sandbox    │  MCP Prompts (8 Personas)       │ │
-│ │  • mcp_quarantine_artifact       │  • Lead Orchestrator            │ │
-│ │  • mcp_restore_quarantined_file  │  • Security Auditor             │ │
-│ │  • mcp_generate_containment_rule │  • Hypothesis Debugger          │ │
-│ │  • mcp_terminate_process         │  • Patch Developer              │ │
-│ │  • mcp_orchestrate_dag (Mailbox) │  • QA / Code Reviewer           │ │
-│ │  • mcp_ponytail_review           │  • SOC Incident Responder       │ │
-│ │  • mcp_ponytail_audit            │  • Ponytail Pragmatic Reviewer  │ │
-│ │  • mcp_ponytail_debt             │  • Ponytail Minimalist Dev      │ │
+│ │  • mcp_run_diagnostic_tool       │ │  • mcp://intel/techniques     │ │
+│ │  • mcp_submit_dynamic_sandbox    │ │  • mcp://intel/families       │ │
+│ │  • mcp_quarantine_artifact       │ │  • mcp://intel/kill-chain     │ │
+│ │  • mcp_restore_quarantined_file  ├─┴───────────────────────────────┤ │
+│ │  • mcp_generate_containment_rule │  MCP Prompts (12 Personas)      │ │
+│ │  • mcp_terminate_process         │  • Lead Orchestrator            │ │
+│ │  • mcp_orchestrate_dag (Mailbox) │  • Security Auditor             │ │
+│ │  • mcp_ponytail_review           │  • Hypothesis Debugger          │ │
+│ │  • mcp_ponytail_audit            │  • Patch Developer              │ │
+│ │  • mcp_ponytail_debt             │  • QA / Code Reviewer           │ │
+│ │  • mcp_validate_finding (Gate)   │  • SOC Incident Responder       │ │
+│ │  • mcp_recall_findings (Memory)  │  • Ponytail Pragmatic Reviewer  │ │
+│ │  • mcp_plan_scan (Task Plan)     │  • Ponytail Minimalist Dev      │ │
+│ │  • mcp_technique_lookup (ATT&CK) │  • Bug Bounty Report Writer     │ │
+│ │  • mcp_attack_path (Kill Chain)  │  • Investigation Lead (PTT)     │ │
+│ │  • mcp_export_bundle (Reports)   │                                 │ │
+│ │  • mcp_orchestrate (Router)      │                                 │ │
 │ └──────────────────────────────────┘ └───────────────────────────────┘ │
 ├────────────────────────────────────────────────────────────────────────┤
 │ Core Defensive Engines                                                 │
@@ -243,7 +250,7 @@ Configured via `.cookiecyber.toml` or `cookiecyber.json`:
 
 ## MCP Interface Reference
 
-### Tools (19 Tools)
+### Tools (31 Tools)
 
 | Tool Name | Scope & Purpose | Key Parameters |
 | :--- | :--- | :--- |
@@ -266,8 +273,20 @@ Configured via `.cookiecyber.toml` or `cookiecyber.json`:
 | `mcp_ponytail_review` | Reviews code or diff against Ponytail 7-Rung Ladder, tagging findings (`delete:`, `stdlib:`, `native:`, `yagni:`, `shrink:`). | `code`, `file_path`, `diff`, `mode` |
 | `mcp_ponytail_audit` | Audits workspace for dead code, unneeded dependencies, and AST YAGNI violations. | `path`, `mode` |
 | `mcp_ponytail_debt` | Scans workspace for `ponytail:` debt comments and compiles a structured Debt Ledger. | `path` |
+| `mcp_validate_finding` | 7-Question validation gate suppressing false positives; returns verdict, confidence, and de-duplicated findings. | `findings`, `code_content`, `target_path`, `remember` |
+| `mcp_recall_findings` | Persistent finding memory: recall, stats, dismiss by fingerprint, dedupe / rank / attack-chain analysis. | `action`, `cwe`, `file_path`, `fingerprint`, `findings` |
+| `mcp_plan_scan` | Decomposes a workspace into focused, prioritized, dependency-ordered security tasks; optionally seeds the DAG. | `target_path`, `max_files`, `seed_dag` |
+| `mcp_technique_lookup` | ATT&CK technique signature lookup by id, tactic, or free-text match against a data-only catalog. | `technique_id`, `query`, `tactic` |
+| `mcp_attack_path` | Kill-chain reasoning: infers likely next tactics and prioritizes detections from observed techniques. | `observed_techniques`, `max_next` |
+| `mcp_export_bundle` | Builds/writes a bundle: ranked findings, chains, SARIF, STIX/MAEC, Markdown, and H1/Bugcrowd templates. | `findings`, `dest_dir`, `title`, `include_stix` |
+| `mcp_orchestrate` | Meta-orchestrator: plans and flexibly executes a coordinated multi-tool workflow from one intent; threads outputs, adapts, withholds writes unless allowed. | `intent`, `target_path`, `code_content`, `allow_write` |
+| `mcp_import_skills` | Ingests a local Agent Skills (`SKILL.md`) knowledge tree offline; degrades gracefully when absent. | `root`, `max_skills` |
+| `mcp_skills_lookup` | Searches the ingested skill catalog by keyword, security domain, or six-framework tag. | `query`, `framework`, `domain`, `root`, `top_k` |
+| `mcp_audit_agent_skills` | Audits skills, MCP manifests, and agent configs for agentic threat patterns; returns ranked findings plus a tamper-evident receipt. | `target_path`, `max_files`, `receipt`, `egress_targets` |
+| `mcp_framework_lookup` | Cross-framework lookup: ATT&CK v19.1 (Stealth / Defense Impairment), D3FEND, ATLAS, CSF 2.0, AI RMF, F3. | `technique_id`, `framework` |
+| `mcp_detection_coverage` | Per-tactic ATT&CK v19.1 detection coverage, gaps, and unmapped techniques for the active rule set. | — |
 
-### Resources (9 Resources)
+### Resources (16 Resources)
 
 | Resource URI | Description |
 | :--- | :--- |
@@ -280,8 +299,15 @@ Configured via `.cookiecyber.toml` or `cookiecyber.json`:
 | `mcp://state/tool-index` | Dynamic catalog of detected host analysis tools (Docker, Semgrep, Radare2, Ghidra, JADX). |
 | `mcp://playbooks/malware-triage` | NIST SP 800-61 Rev 3 static triage and evidence preservation procedures. |
 | `mcp://playbooks/compromise-assessment` | Incident containment, log correlation, and lateral movement detection playbooks. |
+| `mcp://intel/technique-catalog` | Data-only ATT&CK technique signature catalog (offensive primitives as defensive detections). |
+| `mcp://intel/malware-families` | Descriptive traits, ATT&CK mappings, and detection markers for catalogued malware families. |
+| `mcp://intel/attack-kill-chain` | Ordered ATT&CK tactic kill chain used for attack-path reasoning and prioritization. |
+| `mcp://intel/skills-catalog` | Ingested `SKILL.md` skills with domain and six-framework tags, plus library statistics. |
+| `mcp://intel/frameworks` | ATT&CK v19.1 tactics, D3FEND countermeasures, ATLAS techniques, NIST CSF 2.0, NIST AI RMF, and MITRE F3. |
+| `mcp://rules/agentic-threats` | ASI-0X agentic threat classes with the audit heuristic catalog and handling guidance. |
+| `mcp://intel/detection-coverage` | Per-tactic ATT&CK v19.1 coverage of the registered SOC rule set. |
 
-### Prompts (8 Personas)
+### Prompts (12 Personas)
 
 | Prompt Name | Persona / Role | Key Arguments |
 | :--- | :--- | :--- |
@@ -293,6 +319,10 @@ Configured via `.cookiecyber.toml` or `cookiecyber.json`:
 | `mcp_prompt_soc_incident_responder` | SOC Incident Responder: NIST SP 800-61 Rev 3 air-gapped triage | `incident_description`, `artifact_path` |
 | `mcp_prompt_ponytail_review` | Senior Pragmatic Reviewer: 7-Rung ladder code & diff audit | `target_file`, `diff` |
 | `mcp_prompt_ponytail_minimalist` | Ponytail Minimalist Dev: Shortest working diff, native stdlib | `task_description`, `target_file`, `mode` |
+| `mcp_prompt_bug_bounty_report` | Finding Validator & Report Writer: 7-Question Gate then submission-ready reports | `target_file`, `finding` |
+| `mcp_prompt_investigation_ptt` | Investigation Lead: Pentesting Task Tree, kill-chain reasoning, persistence | `goal`, `observed_techniques` |
+| `mcp_prompt_agentic_defender` | Agentic Threat Defender: audits skills, manifests, and configs for agentic risk | `target_path`, `asi_id` |
+| `mcp_prompt_skill_curator` | Skill Curator: ingests a `SKILL.md` tree, indexes framework tags, surfaces relevant skills | `skills_root`, `domain` |
 
 ---
 
@@ -331,8 +361,9 @@ python -m core.cli scan --path . --format json --fail-on high
 # 2. Export OASIS SARIF v2.1.0 for GitHub Code Scanning
 python -m core.cli scan --path src/ --format sarif > results.sarif
 
-# 3. Supply chain SCA dependency audit
-python -m core.cli audit --path .
+# 3. Audit dependency manifests offline (or quarantine / restore artifacts)
+python -m core.cli quarantine --file suspicious_sample.bin
+python -m core.cli restore "<quarantine_id_or_path>"
 
 # 4. Air-gapped static binary triage
 python -m core.cli triage --file suspicious_sample.bin
@@ -340,9 +371,12 @@ python -m core.cli triage --file suspicious_sample.bin
 # 5. Generate cross-platform containment firewall rules
 python -m core.cli contain --target 198.51.100.42 --rule-type block --port 4444
 
-# 6. Adaptive meta-guide exploration
-python -m core.cli guide --intent security_audit
+# 6. Ponytail Lazy Senior Dev audit / review / debt ledger / decision ladder
+python -m core.cli ponytail audit --path .
+python -m core.cli ponytail ladder
 ```
+
+> Dependency auditing (`mcp_audit_dependencies`) is exposed over MCP; the headless CLI covers scan, triage, contain, quarantine, restore, and ponytail actions.
 
 ### Pre-Commit Integration
 
@@ -351,7 +385,7 @@ Add CookieCyberTeam directly to your `.pre-commit-config.yaml`:
 ```yaml
 repos:
   - repo: https://github.com/LoveCookieee-java/CookieCyberTeam
-    rev: v1.0.2
+    rev: v1.1.0
     hooks:
       - id: cookiecyber-scan
         args: ["--fail-on", "high"]
@@ -408,22 +442,40 @@ Add CookieCyberTeam to your MCP client configuration (e.g. `claude_desktop_confi
 
 ## Verification & Benchmarks
 
-CookieCyberTeam is verified by **332 automated unit tests** executed across all core defensive engines, achieving a **100% pass rate** in under 10.2 seconds.
+CookieCyberTeam is verified by **475 automated unit tests** executed across all core defensive engines, achieving a **100% pass rate**.
 
 | Test Suite Module | Target Component Tested | Test Count | Pass Rate |
 | :--- | :--- | :--- | :--- |
-| `tests/test_ast_scanner.py` | Inter-procedural taint flow, 17 CWEs, OASIS SARIF v2.1.0 | 36 | 100% |
-| `tests/test_cvss_calculator.py` | FIRST CVSS v3.1 & v4.0 vector arithmetic & score rounding | 22 | 100% |
-| `tests/test_sandbox_guardrails.py` | 5 guardrail gates, polyglot syntax, diff caps, process isolation | 54 | 100% |
-| `tests/test_binary_triage.py` | PE/ELF/Mach-O/DEX parsing, $W \oplus X$ checks, Shannon entropy | 38 | 100% |
-| `tests/test_code_search.py` | Semble syntactic AST chunking, SQLite FTS5 WAL caching | 24 | 100% |
-| `tests/test_sca_scanner.py` | Offline OSV supply chain composition scanner | 18 | 100% |
-| `tests/test_containment_engine.py` | Netsh, iptables, UFW rules, XOR quarantine & restoration | 26 | 100% |
-| `tests/test_project_profiler.py` | Sub-5ms stack discovery, cognitive anchor guide | 20 | 100% |
-| `tests/test_soc_rules.py` | Dynamic MITRE ATT&CK detection engine & playbooks | 24 | 100% |
-| `tests/test_mcp_server.py` | JSON-RPC 2.0 stdio protocol, 19 Tools, 9 Resources, 8 Prompts | 29 | 100% |
-| `tests/test_ponytail_engine.py` | 7-Rung Ladder, Polyglot stdlib/native, AST YAGNI, Ponytail modes | 34 | 100% |
-| **Consolidated Total** | **Entire CookieCyberTeam Defensive Engine** | **332 Tests** | **100% Passed** |
+| `tests/test_ast_scanner.py` | Inter-procedural taint flow, 17 CWEs, OASIS SARIF v2.1.0, git-rev argument-injection guard | 69 | 100% |
+| `tests/test_sandbox_guardrails.py` | 5 guardrail gates, polyglot syntax, diff caps, process isolation | 67 | 100% |
+| `tests/test_ponytail_engine.py` | 7-Rung Ladder, Polyglot stdlib/native, AST YAGNI, Ponytail modes, token-ledger bounds | 35 | 100% |
+| `tests/test_mcp_server.py` | JSON-RPC 2.0 stdio protocol, 31 Tools, 16 Resources, 12 Prompts | 30 | 100% |
+| `tests/test_containment.py` | Netsh, iptables, UFW rules, XOR quarantine & restoration | 17 | 100% |
+| `tests/test_cvss_calculator.py` | FIRST CVSS v3.1 & v4.0 vector arithmetic & score rounding | 17 | 100% |
+| `tests/test_soc_rules.py` | Dynamic MITRE ATT&CK detection engine & playbooks | 15 | 100% |
+| `tests/test_binary_triage.py` | PE/ELF/Mach-O/DEX parsing, $W \oplus X$ checks, Shannon entropy | 14 | 100% |
+| `tests/test_cape_adapter.py` | CAPEv2/Cuckoo REST submission, polling & fallback advisories | 14 | 100% |
+| `tests/test_dag_orchestrator.py` | DAG pipeline validation, mailbox routing, Max Hop TTL & disk-backed WAL recovery | 16 | 100% |
+| `tests/test_code_search.py` | Semble syntactic AST chunking, SQLite FTS5 WAL caching | 13 | 100% |
+| `tests/test_config.py` | `.cookiecyber.toml` / `cookiecyber.json` discovery & diff caps | 12 | 100% |
+| `tests/test_project_profiler.py` | Sub-5ms stack discovery, cognitive anchor guide | 8 | 100% |
+| `tests/test_cli.py` | Headless CLI scan, triage, contain & quarantine gating | 8 | 100% |
+| `tests/test_sca_scanner.py` | Offline OSV supply chain composition scanner | 6 | 100% |
+| `tests/test_finding_validator.py` | 7-Question validation gate, proof-backed validation & false-positive suppression | 13 | 100% |
+| `tests/test_technique_catalog.py` | ATT&CK technique signatures & dynamic SOC rule adaptation | 6 | 100% |
+| `tests/test_malware_intel.py` | PE imports/imphash, fuzzy hashing, family match, STIX/MAEC | 10 | 100% |
+| `tests/test_finding_memory.py` | Finding memory, dedup, ranking, chains, rotation, dismissal | 8 | 100% |
+| `tests/test_scan_planner.py` | Focused task decomposition & DAG seeding | 4 | 100% |
+| `tests/test_attack_path.py` | Kill-chain reasoning & Pentesting Task Tree | 8 | 100% |
+| `tests/test_report_export.py` | SARIF/STIX/MAEC/Markdown bundle building & export, filename hardening | 7 | 100% |
+| `tests/test_remediation_advisor.py` | Offline exposure-to-remediation advisory tiers | 4 | 100% |
+| `tests/test_orchestrator.py` | Meta-orchestrator planning (repo/binary/deps/incident + skill/agentic audit), context threading, write gating | 14 | 100% |
+| `tests/test_skill_library.py` | `SKILL.md` frontmatter parsing, validation, catalog search | 17 | 100% |
+| `tests/test_agent_surface.py` | Agentic surface audit heuristics, audit receipts, egress lockdown | 18 | 100% |
+| `tests/test_framework_catalog.py` | ATT&CK v19.1 / D3FEND / ATLAS / CSF / AI RMF / F3 mapping & coverage matrix | 13 | 100% |
+| `tests/test_server_card.py` | MCP discovery card drift guard (tools / resources / prompts) | 6 | 100% |
+| `tests/test_tool_input_fuzz.py` | Hostile-input fuzz sweep: no-raise envelope contract across all 31 tools | 6 | 100% |
+| **Consolidated Total** | **Entire CookieCyberTeam Defensive Engine** | **475 Tests** | **100% Passed** |
 
 ```bash
 # Run server diagnostic self-test

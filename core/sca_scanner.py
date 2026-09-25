@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
+from core.remediation_advisor import enrich_vulnerabilities
+
 
 @dataclass
 class VulnerabilityRecord:
@@ -312,11 +314,14 @@ class SCAScanner:
             pkg_findings = self.scan_dependencies({pkg: ver}, source_file=src)
             findings.extend(pkg_findings)
 
+        enriched = enrich_vulnerabilities([f.to_dict() for f in findings])
+        urgent = [v for v in enriched if v.get("advisory", {}).get("urgency") in ("immediate", "urgent")]
         return {
             "success": True,
             "manifest_files": manifest_files,
             "total_dependencies_checked": len(all_deps),
             "dependencies": flat_deps,
-            "vulnerabilities": [f.to_dict() for f in findings],
+            "vulnerabilities": enriched,
             "vulnerability_count": len(findings),
+            "urgent_count": len(urgent),
         }

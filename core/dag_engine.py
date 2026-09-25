@@ -31,6 +31,10 @@ ALLOWED_AGENT_ROLES = {
     "Patch Developer",
     "QA Reviewer",
     "SOC Incident Responder",
+    # Agent-surface roles added for skill and agentic-threat workflows.
+    "Skill Curator",
+    "Agentic Threat Analyst",
+    "Detection Engineer",
 }
 
 
@@ -303,6 +307,7 @@ class DAGEngine:
         completed_ids = {t["task_id"] for t in all_tasks if t["status"] == "COMPLETED"}
         running_tasks = [t for t in all_tasks if t["status"] == "RUNNING"]
         recovered: List[Dict[str, Any]] = []
+        audit_entries: List[Tuple[str, str]] = []
         now = self._now()
 
         with self._connection() as conn:
@@ -323,12 +328,18 @@ class DAGEngine:
                     "new_status": new_status,
                     "dependencies": deps,
                 })
-                self.log_event(
-                    "TASK_ORPHAN_RECOVERED",
-                    "DAGEngine",
-                    f"Orphaned task '{t_id}' recovered from RUNNING to {new_status}",
-                )
+                # Queued, not logged inline: log_event() opens its own connection and
+                # would deadlock against this still-open write transaction on disk-backed
+                # databases (SQLITE_BUSY for the full busy timeout, then "database is locked").
+                audit_entries.append((t_id, new_status))
             conn.commit()
+
+        for t_id, new_status in audit_entries:
+            self.log_event(
+                "TASK_ORPHAN_RECOVERED",
+                "DAGEngine",
+                f"Orphaned task '{t_id}' recovered from RUNNING to {new_status}",
+            )
 
         return {
             "success": True,

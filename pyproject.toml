@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cookie-cyber-team"
-version = "1.0.2"
+version = "1.1.0"
 description = "Single Unified Intelligent MCP Server & 5-Gate Defensive Cyber Guardrails for AI Coding Agents"
 readme = "README.md"
 license = { text = "MIT" }
@@ -25,7 +25,12 @@ keywords = [
     "cursor",
     "windsurf",
     "zero-trust",
-    "binary-triage"
+    "binary-triage",
+    "agent-skills",
+    "skill-audit",
+    "agentic-security",
+    "mcp-security",
+    "detection-engineering"
 ]
 classifiers = [
     "Development Status :: 5 - Production/Stable",

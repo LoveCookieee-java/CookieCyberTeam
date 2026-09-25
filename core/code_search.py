@@ -305,11 +305,16 @@ class FTS5BM25Searcher:
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
             
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        if not in_memory:
-            self.conn.execute("PRAGMA journal_mode=WAL;")
-            self.conn.execute("PRAGMA synchronous=NORMAL;")
-        self.fts5_supported = self._init_schema()
+        try:
+            self.conn.row_factory = sqlite3.Row
+            if not in_memory:
+                self.conn.execute("PRAGMA journal_mode=WAL;")
+                self.conn.execute("PRAGMA synchronous=NORMAL;")
+            self.fts5_supported = self._init_schema()
+        except Exception:
+            # Schema bootstrap failure must not strand the SQLite handle.
+            self.conn.close()
+            raise
 
     def _init_schema(self) -> bool:
         """Create virtual table with FTS5 or fallback table, and file metadata table."""

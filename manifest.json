@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "cookie-cyber-team",
   "display_name": "CookieCyberTeam",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "description": "Single Unified Intelligent MCP Server, Defensive Guardrails & Cyber Defense System for autonomous vulnerability remediation, inter-procedural taint flow analysis, air-gapped binary triage, and zero-regression safe patch verification.",
   "author": {
     "name": "CookieGli Security Team"
@@ -1207,6 +1207,175 @@
         ],
         "priority": 1.0
       }
+    },
+    {
+      "name": "mcp_validate_finding",
+      "description": "Apply the deterministic 7-Question validation gate to suppress false positives. Answers reachability, taint source, sanitization, context, novelty, exploitability, and scope, returning a verdict (submit/investigate/discard) with confidence and de-duplicated findings.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "findings": {"type": "array", "items": {"type": "object"}, "description": "Pre-computed finding dicts to validate."},
+          "finding": {"type": "object", "description": "A single finding dict to validate."},
+          "code_content": {"type": "string", "description": "In-memory source to scan and then validate."},
+          "file_path": {"type": "string", "description": "File path label for in-memory code."},
+          "target_path": {"type": "string", "description": "Path to a file or directory to scan and validate."},
+          "remember": {"type": "boolean", "description": "Persist validated findings into the finding memory ledger.", "default": false}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_recall_findings",
+      "description": "Persistent finding memory: recall remembered findings, compute stats, dismiss noise by fingerprint, or run dedupe / rank / attack-chain analysis over a finding set.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {"type": "string", "enum": ["recall", "stats", "dismiss", "dedupe", "rank", "chains"], "default": "recall"},
+          "cwe": {"type": "string", "description": "Filter recalled findings by CWE id."},
+          "file_path": {"type": "string", "description": "Filter recalled findings by file path."},
+          "min_confidence": {"type": "number", "description": "Only recall findings at or above this confidence."},
+          "include_dismissed": {"type": "boolean", "default": false},
+          "fingerprint": {"type": "string", "description": "Fingerprint to dismiss."},
+          "reason": {"type": "string", "description": "Optional dismissal reason."},
+          "findings": {"type": "array", "items": {"type": "object"}, "description": "Findings for dedupe/rank/chains."}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_plan_scan",
+      "description": "Decompose a workspace into focused, prioritized, dependency-ordered security tasks (recon, per-file SAST, dependency audit, secrets, binary triage, aggregation). Optionally seeds the multi-agent DAG pipeline.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target_path": {"type": "string", "description": "Directory to plan (defaults to workspace root)."},
+          "max_files": {"type": "integer", "description": "Maximum source files to include (default: 50)."},
+          "seed_dag": {"type": "boolean", "description": "Seed the plan into the DAG engine as a pipeline.", "default": false}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_technique_lookup",
+      "description": "Look up ATT&CK technique signatures by id, tactic, or free-text match against a curated, data-only catalog of offensive primitives expressed as defensive detection signatures.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "technique_id": {"type": "string", "description": "ATT&CK technique id (e.g. 'T1055.002')."},
+          "query": {"type": "string", "description": "Free-text match against catalog signatures."},
+          "tactic": {"type": "string", "description": "Filter by ATT&CK tactic name."}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_attack_path",
+      "description": "Attack-path reasoning: place observed techniques on the ATT&CK kill chain, infer likely next tactics, and surface the highest-value detections and remediation steps.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "observed_techniques": {"type": "array", "items": {"type": "string"}, "description": "ATT&CK technique ids already observed."},
+          "max_next": {"type": "integer", "description": "Maximum next-step candidates to return (default: 6)."}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_export_bundle",
+      "description": "Build and optionally write a report bundle: ranked findings, attack chains, OASIS SARIF 2.1.0, STIX 2.1 / MAEC 5.x indicators, a Markdown report, and HackerOne/Bugcrowd submission templates.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "findings": {"type": "array", "items": {"type": "object"}, "description": "Findings to include."},
+          "target_path": {"type": "string", "description": "Scan this path if no findings are supplied."},
+          "use_memory": {"type": "boolean", "description": "Fall back to remembered findings.", "default": true},
+          "title": {"type": "string", "description": "Report title."},
+          "dest_dir": {"type": "string", "description": "Directory to write the bundle files into."},
+          "include_stix": {"type": "boolean", "default": true},
+          "include_reports": {"type": "boolean", "default": true},
+          "include_markdown": {"type": "boolean", "default": false}
+        }
+      },
+      "annotations": {"readOnly": false, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_orchestrate",
+      "description": "Meta-orchestrator: turns a single high-level intent (auto/audit_repo/review_code/triage_binary/dependency_audit/incident_response) into a coordinated, dependency-aware sequence of the other tools, threads each step's output into the next, adapts when results change the plan, and withholds all write/destructive steps unless allow_write=true.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "intent": {"type": "string", "enum": ["auto", "audit_repo", "review_code", "triage_binary", "dependency_audit", "incident_response", "skill_audit", "agentic_audit"], "default": "auto"},
+          "target_path": {"type": "string", "description": "File or directory to operate on (defaults to workspace root)."},
+          "code_content": {"type": "string", "description": "In-memory snippet for intent='review_code'."},
+          "allow_write": {"type": "boolean", "default": false, "description": "Opt in to executing withheld write/quarantine/terminate steps."},
+          "max_files": {"type": "integer", "default": 50},
+          "containment_target": {"type": "string"},
+          "containment_port": {"type": "integer"},
+          "pid": {"type": "integer"}
+        }
+      },
+      "annotations": {"readOnly": false, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_import_skills",
+      "description": "Ingests a local Agent Skills (SKILL.md) knowledge tree into memory. Offline and optional: degrades gracefully when no tree exists. Never executes skill scripts or fetches from the network.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "root": {"type": "string", "description": "Directory containing SKILL.md files."},
+          "max_skills": {"type": "integer", "default": 500}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_skills_lookup",
+      "description": "Search and inspect the ingested Agent Skills (SKILL.md) knowledge catalog by keyword, security domain, or framework tag (ATT&CK, NIST CSF, ATLAS, D3FEND, AI RMF, F3).",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {"type": "string"},
+          "framework": {"type": "string"},
+          "domain": {"type": "string"},
+          "root": {"type": "string"},
+          "max_skills": {"type": "integer", "default": 500},
+          "top_k": {"type": "integer", "default": 10}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_audit_agent_skills",
+      "description": "Audits skills, MCP manifests, and agent configs for agentic threat patterns (prompt injection, over-broad tool grants, credential access, exfiltration shapes, sandbox escape, supply chain). Returns ranked findings, a tamper-evident audit receipt, and optional generated egress-block rules.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "target_path": {"type": "string"},
+          "max_files": {"type": "integer", "default": 400},
+          "receipt": {"type": "boolean", "default": true},
+          "egress_targets": {"type": "array", "items": {"type": "string"}},
+          "ports": {"type": "array", "items": {"type": "integer"}}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_framework_lookup",
+      "description": "Look up multi-framework security data: ATT&CK v19.1 tactics (including the Stealth / Defense Impairment split), D3FEND countermeasures, ATLAS techniques, NIST CSF 2.0 functions, NIST AI RMF functions, and MITRE F3 fraud tactics. Pass a technique_id for a cross-framework mapping.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "technique_id": {"type": "string"},
+          "framework": {"type": "string"}
+        }
+      },
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
+    },
+    {
+      "name": "mcp_detection_coverage",
+      "description": "Report ATT&CK v19.1 detection coverage across the registered SOC rule set: per-tactic technique coverage, gaps, and unmapped techniques.",
+      "inputSchema": {"type": "object", "properties": {}},
+      "annotations": {"readOnly": true, "destructive": false, "audience": ["user", "assistant"], "priority": 1.0}
     }
   ],
   "compatibility": {

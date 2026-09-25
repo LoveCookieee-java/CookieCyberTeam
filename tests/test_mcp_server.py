@@ -1,6 +1,6 @@
 """
 Unit tests for CookieCyberTeam MCP Server JSON-RPC protocol & Tool dispatching.
-Tests all 19 Tools, 9 Resources, 8 Prompts, Mailbox routing, Code Search, and Binary Triage.
+Tests all 31 Tools, 16 Resources, 12 Prompts, Mailbox routing, Code Search, and Binary Triage.
 """
 
 import json
@@ -24,12 +24,12 @@ class TestMCPServer(unittest.TestCase):
         self.assertEqual(res["protocolVersion"], "2024-11-05")
         self.assertEqual(res["serverInfo"]["name"], "cookie-cyber-team")
 
-    def test_tools_list_all_nineteen(self):
-        """Verify all 19 core tools are registered."""
+    def test_tools_list_all_thirty_one(self):
+        """Verify all 31 core tools are registered."""
         req = {"jsonrpc": "2.0", "id": 102, "method": "tools/list", "params": {}}
         resp = self.server.handle_request(req)
         tools = resp["result"]["tools"]
-        self.assertEqual(len(tools), 19)
+        self.assertEqual(len(tools), 31)
         tool_names = {t["name"] for t in tools}
         expected = {
             "mcp_adaptive_guide",
@@ -51,15 +51,27 @@ class TestMCPServer(unittest.TestCase):
             "mcp_ponytail_review",
             "mcp_ponytail_audit",
             "mcp_ponytail_debt",
+            "mcp_validate_finding",
+            "mcp_recall_findings",
+            "mcp_plan_scan",
+            "mcp_technique_lookup",
+            "mcp_attack_path",
+            "mcp_export_bundle",
+            "mcp_orchestrate",
+            "mcp_import_skills",
+            "mcp_skills_lookup",
+            "mcp_audit_agent_skills",
+            "mcp_framework_lookup",
+            "mcp_detection_coverage",
         }
         self.assertEqual(tool_names, expected)
 
-    def test_resources_list_and_read_all_nine(self):
-        """Verify all 9 resources are registered and readable."""
+    def test_resources_list_and_read_all_sixteen(self):
+        """Verify all 16 resources are registered and readable."""
         req = {"jsonrpc": "2.0", "id": 103, "method": "resources/list", "params": {}}
         resp = self.server.handle_request(req)
         resources = resp["result"]["resources"]
-        self.assertEqual(len(resources), 9)
+        self.assertEqual(len(resources), 16)
         uris = {r["uri"] for r in resources}
         expected_uris = {
             "mcp://rules/security-standards",
@@ -71,6 +83,13 @@ class TestMCPServer(unittest.TestCase):
             "mcp://playbooks/compromise-assessment",
             "mcp://context/project-genome",
             "mcp://rules/active-guardrails",
+            "mcp://intel/technique-catalog",
+            "mcp://intel/malware-families",
+            "mcp://intel/attack-kill-chain",
+            "mcp://intel/skills-catalog",
+            "mcp://intel/frameworks",
+            "mcp://rules/agentic-threats",
+            "mcp://intel/detection-coverage",
         }
         self.assertEqual(uris, expected_uris)
 
@@ -86,12 +105,12 @@ class TestMCPServer(unittest.TestCase):
             content = read_resp["result"]["contents"][0]["text"]
             self.assertGreater(len(content), 20)
 
-    def test_prompts_list_and_get_all_eight(self):
-        """Verify prompt templates generation for all 8 agent personas."""
+    def test_prompts_list_and_get_all_twelve(self):
+        """Verify prompt templates generation for all 12 agent personas."""
         req = {"jsonrpc": "2.0", "id": 105, "method": "prompts/list", "params": {}}
         resp = self.server.handle_request(req)
         prompts = resp["result"]["prompts"]
-        self.assertEqual(len(prompts), 8)
+        self.assertEqual(len(prompts), 12)
 
         expected_prompts = [
             "mcp_prompt_orchestrator",
@@ -102,6 +121,10 @@ class TestMCPServer(unittest.TestCase):
             "mcp_prompt_soc_incident_responder",
             "mcp_prompt_ponytail_review",
             "mcp_prompt_ponytail_minimalist",
+            "mcp_prompt_bug_bounty_report",
+            "mcp_prompt_investigation_ptt",
+            "mcp_prompt_agentic_defender",
+            "mcp_prompt_skill_curator",
         ]
 
         for p_name in expected_prompts:
@@ -360,6 +383,66 @@ class TestMCPServer(unittest.TestCase):
             self.assertFalse(payload_rel["success"])
             self.assertTrue(payload_rel.get("violation"))
             self.assertIn("Path traversal violation", payload_rel.get("message", ""))
+
+    def test_tool_call_preview_surgical_patch_dry_run_and_gate_rejection(self):
+        """Verify mcp_preview_surgical_patch dispatches through JSON-RPC and returns structured gate rejections."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            server = CookieCyberMCPServer(db_path=":memory:", workspace_root=tmpdir)
+            target = Path(tmpdir) / "module.py"
+            target.write_text("value = 1\n", encoding="utf-8")
+
+            init_req = {
+                "jsonrpc": "2.0",
+                "id": 195,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_orchestrate_dag",
+                    "arguments": {"action": "init_pipeline", "target_file": str(target)},
+                },
+            }
+            init_payload = json.loads(server.handle_request(init_req)["result"]["content"][0]["text"])
+            token = init_payload["committer_token"]
+
+            preview_req = {
+                "jsonrpc": "2.0",
+                "id": 196,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_preview_surgical_patch",
+                    "arguments": {
+                        "target_file": str(target),
+                        "unified_diff": "--- a/module.py\n+++ b/module.py\n@@ -1 +1 @@\n-value = 1\n+value = 2\n",
+                        "committer_token": token,
+                    },
+                },
+            }
+            resp = server.handle_request(preview_req)
+            payload = json.loads(resp["result"]["content"][0]["text"])
+            self.assertTrue(payload["success"], payload.get("error") or payload.get("message"))
+            self.assertIn("value = 2", payload["diff_stats"]["diff_text"])
+            self.assertIn("Gate 2 Zero-Regression SAST", payload["gates_passed"])
+            # Dry run must never mutate the file on disk
+            self.assertEqual(target.read_text(encoding="utf-8"), "value = 1\n")
+
+            # Gate rejection must be structured, not an unhandled exception
+            git_req = {
+                "jsonrpc": "2.0",
+                "id": 197,
+                "method": "tools/call",
+                "params": {
+                    "name": "mcp_preview_surgical_patch",
+                    "arguments": {
+                        "target_file": str(Path(tmpdir) / ".git" / "config"),
+                        "patched_content": "leak = True\n",
+                        "committer_token": token,
+                    },
+                },
+            }
+            git_resp = server.handle_request(git_req)
+            git_payload = json.loads(git_resp["result"]["content"][0]["text"])
+            self.assertFalse(git_payload["success"])
+            self.assertTrue(git_payload.get("violation"))
+            self.assertEqual(git_payload.get("gate"), "Git Branch Isolation Gate")
 
     def test_tool_call_apply_safe_patch_rejects_without_token_at_startup(self):
         """Verify mcp_apply_safe_patch rejects unauthenticated commits at server startup before any pipeline."""

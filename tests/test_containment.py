@@ -11,6 +11,7 @@ import stat
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from core.containment import (
     generate_firewall_rule,
@@ -311,6 +312,51 @@ class TestContainment(unittest.TestCase):
             )
             self.assertTrue(rest_res["success"])
             self.assertEqual(dest2.read_bytes(), b"RELOCATED_TEST_BYTES")
+
+    def test_quarantine_identical_content_same_second_stays_unique(self):
+        """Verify re-quarantining identical content never overwrites vaulted evidence."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ws = Path(tmp_dir)
+            content = b"IDENTICAL_DROPPER_BYTES_FOR_COLLISION_CHECK"
+            quarantine_ids = []
+
+            for idx in range(2):
+                sample = ws / f"dir{idx}" / "sample.bin"
+                sample.parent.mkdir(parents=True, exist_ok=True)
+                sample.write_bytes(content)
+                res = quarantine_file(file_path=sample, workspace_root=ws)
+                self.assertTrue(res["success"], res.get("error"))
+                quarantine_ids.append(res["quarantine_id"])
+                self.assertTrue(Path(res["quarantine_path"]).is_file())
+
+            self.assertEqual(len(set(quarantine_ids)), 2)
+            vault = ws / ".quarantine"
+            enc_files = sorted(vault.glob("*.enc"))
+            self.assertEqual(len(enc_files), 2)
+            manifest = json.loads((vault / "quarantine_manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(manifest["items"]), 2)
+
+            # Both payloads must remain recoverable from their own vault entries
+            for dest in enc_files:
+                if os.name != "nt":
+                    os.chmod(dest, stat.S_IRUSR)
+                self.assertEqual(bytes([b ^ XOR_KEY for b in dest.read_bytes()]), content)
+
+    def test_quarantine_relocation_failure_restores_artifact_bytes(self):
+        """Verify a failed vault relocation restores pristine bytes instead of leaving them scrambled."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ws = Path(tmp_dir)
+            sample = ws / "sample.bin"
+            content = b"PRISTINE_ARTIFACT_BYTES"
+            sample.write_bytes(content)
+
+            with mock.patch("core.containment.os.replace", side_effect=OSError("simulated relocation failure")):
+                res = quarantine_file(file_path=sample, workspace_root=ws)
+
+            self.assertFalse(res["success"])
+            self.assertIn("restored", res["error"])
+            self.assertTrue(sample.is_file())
+            self.assertEqual(sample.read_bytes(), content)
 
 
 if __name__ == "__main__":

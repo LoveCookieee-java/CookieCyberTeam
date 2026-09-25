@@ -614,6 +614,28 @@ class TestProjectGenomeProfilerPonytail(unittest.TestCase):
         self.assertLessEqual(len(manager._committer_tokens), 500)
         self.assertEqual(manager._tokens_issued, 505)
 
+    def test_committer_token_eviction_is_fifo(self):
+        """
+        Eviction at capacity must drop the OLDEST token deterministically.
+
+        A plain set pops an arbitrary member, which could silently invalidate a
+        freshly issued capability token while keeping a stale one alive.
+        """
+        manager = SafePatchManager(enforce_token=True)
+        first = manager.generate_committer_token("Lead Orchestrator")
+        recent = None
+        for _ in range(504):
+            recent = manager.generate_committer_token("Lead Orchestrator")
+
+        # Oldest token has been evicted, the newest is still valid.
+        self.assertFalse(manager.validate_committer_token(first))
+        self.assertTrue(manager.validate_committer_token(recent))
+
+        # Revocation still works against the ordered ledger.
+        manager.revoke_committer_token(recent)
+        self.assertFalse(manager.validate_committer_token(recent))
+        self.assertEqual(len(manager._committer_tokens), 499)
+
 
 if __name__ == "__main__":
     unittest.main()

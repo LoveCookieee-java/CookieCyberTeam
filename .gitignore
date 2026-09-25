@@ -27,6 +27,9 @@ venv/
 .quarantine/
 *.bin
 
+# Freebuff workspace metadata (internal, never publish)
+.freebuff/
+
 # IDEs & Editors
 .vscode/
 .idea/

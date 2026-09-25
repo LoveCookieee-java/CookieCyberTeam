@@ -118,7 +118,15 @@ class ToolchainIndexer:
 
         return "\n".join(lines)
 
+    #: Tools that may be executed headlessly and safely against a file.
     ALLOWED_DIAGNOSTIC_TOOLS = {"strings", "readelf", "objdump", "cfr", "jadx", "r2", "radare2"}
+
+    #: GUI-capable debuggers (e.g. x64dbg) are recognized but may only be run in
+    #: an explicit non-interactive mode, so a stray call cannot pop a debugger UI
+    #: on the operator's desktop mid-incident.
+    NON_INTERACTIVE_DIAGNOSTIC_TOOLS = {"x64dbg", "x96dbg", "x32dbg"}
+    NON_INTERACTIVE_FLAG = "--non-interactive"
+    EXECUTABLE_DIAGNOSTIC_TOOLS = ALLOWED_DIAGNOSTIC_TOOLS | NON_INTERACTIVE_DIAGNOSTIC_TOOLS
 
     def run_diagnostic_tool(
         self,
@@ -132,17 +140,30 @@ class ToolchainIndexer:
         Enforces tool whitelisting, argument validation, and execution via SandboxRunner.
         """
         tool_clean = tool_name.lower().strip()
-        if tool_clean not in self.ALLOWED_DIAGNOSTIC_TOOLS:
+        if tool_clean not in self.EXECUTABLE_DIAGNOSTIC_TOOLS:
             return {
                 "success": False,
-                "error": f"Tool '{tool_name}' is not in allowed diagnostic whitelist: {sorted(self.ALLOWED_DIAGNOSTIC_TOOLS)}",
+                "error": f"Tool '{tool_name}' is not in allowed diagnostic whitelist: {sorted(self.EXECUTABLE_DIAGNOSTIC_TOOLS)}",
             }
+
+        if tool_clean in self.NON_INTERACTIVE_DIAGNOSTIC_TOOLS:
+            if not args or self.NON_INTERACTIVE_FLAG not in args:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Tool '{tool_clean}' is a GUI-capable debugger; refusing to launch it "
+                        f"interactively. Pass '{self.NON_INTERACTIVE_FLAG}' in args to acknowledge "
+                        "non-interactive execution."
+                    ),
+                }
 
         # Validate arguments: disallow dangerous shell metacharacters first
         sanitized_args: List[str] = []
         if args:
             disallowed_chars = {";", "&", "|", "`", "$", "(", ")", "<", ">", "\n", "\r"}
             for a in args:
+                if a == self.NON_INTERACTIVE_FLAG:
+                    continue
                 if not isinstance(a, str) or any(c in a for c in disallowed_chars):
                     return {
                         "success": False,
